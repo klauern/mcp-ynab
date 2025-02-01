@@ -1,0 +1,12 @@
+---
+description: MCP project implementation details
+globs: **/*.txt,**/*.md
+---
+# Model Context Protocol (MCP) Help
+
+There are some docs to help composing an MCP-compliant server:
+
+- https://modelcontextprotocol.io/llms-full.txt
+- https://github.com/modelcontextprotocol/python-sdk
+
+You can also use [llms-full.txt](mdc:docs/llms-full.txt) and [mcp-py-sdk.md](mdc:docs/mcp-py-sdk.md) to reference how to implement features of the Python version of the MCP protocol.

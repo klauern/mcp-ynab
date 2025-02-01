@@ -1,0 +1,31 @@
+[project]
+name = "mcp-ynab"
+version = "0.1.0"
+description = "MCP server for YNAB API integration"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "mcp[cli]>=0.5.0",
+  "httpx>=0.26.0",
+  "pydantic>=2.0.0",
+  "ynab>=1.0.1",
+  "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "black>=24.0.0", "ruff>=0.2.0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[project.scripts]
+mcp-ynab = "mcp_ynab:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

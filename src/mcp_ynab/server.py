@@ -91,12 +91,22 @@ async def get_account_balance(account_id: str) -> float:
 
 
 @mcp.resource("ynab://budgets")
-async def get_budgets() -> List[Dict[str, Any]]:
-    """List all YNAB budgets."""
+async def get_budgets() -> str:
+    """List all YNAB budgets in Markdown format."""
     with _get_client() as client:
         budgets_api = ynab.BudgetsApi(client)
         budgets_response = budgets_api.get_budgets()
-        return [budget.to_dict() for budget in budgets_response.data.budgets]
+        budgets_list = budgets_response.data.budgets
+
+        # Build Markdown output for budgets.
+        markdown = "# YNAB Budgets\n\n"
+        if not budgets_list:
+            markdown += "_No budgets found._"
+        else:
+            for budget in budgets_list:
+                b = budget.to_dict()
+                markdown += f"- **{b.get('name', 'Unnamed Budget')}** (ID: {b.get('id')})\n"
+        return markdown
 
 
 def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -199,23 +209,35 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
     return output
 
 
-@mcp.resource("ynab://accounts")
-async def get_accounts() -> Dict[str, Any]:
-    """List all YNAB accounts across all budgets."""
+@mcp.resource("ynab://{budget_id}/accounts")
+async def get_accounts(budget_id: str) -> str:
+    """List all YNAB accounts in a specific budget in Markdown format."""
     with _get_client() as client:
-        budgets_api = ynab.BudgetsApi(client)
         accounts_api = ynab.AccountsApi(client)
         all_accounts = []
 
-        budgets_response = budgets_api.get_budgets()
-        for budget in budgets_response.data.budgets:
-            try:
-                response = accounts_api.get_accounts(budget.id)
-                all_accounts.extend(account.to_dict() for account in response.data.accounts)
-            except ynab.ApiException:
-                continue
+        response = accounts_api.get_accounts(budget_id)
+        all_accounts.extend(account.to_dict() for account in response.data.accounts)
 
-        return _format_accounts_output(all_accounts)
+        formatted = _format_accounts_output(all_accounts)
+
+        # Build Markdown output for accounts.
+        markdown = "# YNAB Account Summary\n\n"
+        markdown += "## Summary\n"
+        markdown += f"- **Total Assets:** {formatted['summary']['total_assets']}\n"
+        markdown += f"- **Total Liabilities:** {formatted['summary']['total_liabilities']}\n"
+        markdown += f"- **Net Worth:** {formatted['summary']['net_worth']}\n\n"
+
+        for group in formatted["accounts"]:
+            markdown += f"## {group['type']}\n"
+            markdown += f"**Group Total:** {group['total']}\n\n"
+            markdown += "| Account Name | Balance |\n"
+            markdown += "|--------------|---------|\n"
+            for acct in group["accounts"]:
+                markdown += f"| {acct['name']} | {acct['balance']} |\n"
+            markdown += "\n"
+
+        return markdown
 
 
 @mcp.resource("ynab://transactions/{account_id}")

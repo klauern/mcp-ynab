@@ -90,7 +90,7 @@ async def get_account_balance(account_id: str) -> float:
         return float(response.data.account.balance) / 1000
 
 
-@mcp.resource("ynab://budgets")
+@mcp.tool()
 async def get_budgets() -> str:
     """List all YNAB budgets in Markdown format."""
     with _get_client() as client:
@@ -209,7 +209,7 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
     return output
 
 
-@mcp.resource("ynab://{budget_id}/accounts")
+@mcp.tool()
 async def get_accounts(budget_id: str) -> str:
     """List all YNAB accounts in a specific budget in Markdown format."""
     with _get_client() as client:
@@ -231,38 +231,39 @@ async def get_accounts(budget_id: str) -> str:
         for group in formatted["accounts"]:
             markdown += f"## {group['type']}\n"
             markdown += f"**Group Total:** {group['total']}\n\n"
-            markdown += "| Account Name | Balance |\n"
-            markdown += "|--------------|---------|\n"
+            markdown += "| Account Name               | Balance     | ID                                    |\n"
+            markdown += "|----------------------------|-------------|---------------------------------------|\n"
             for acct in group["accounts"]:
-                markdown += f"| {acct['name']} | {acct['balance']} |\n"
+                markdown += f"| {acct['name']:<26} | {acct['balance']:<11} | {acct['id']} |\n"
             markdown += "\n"
 
         return markdown
 
 
-@mcp.resource("ynab://transactions/{account_id}")
-async def get_transactions(account_id: str) -> List[Dict[str, Any]]:
-    """Get recent transactions for a specific account."""
+@mcp.tool()
+async def get_transactions(budget_id: str, account_id: str) -> str:
+    """Get recent transactions for a specific account in a specific budget."""
     with _get_client() as client:
         transactions_api = ynab.TransactionsApi(client)
-        budgets_api = ynab.BudgetsApi(client)
         all_transactions = []
 
-        # Find which budget contains this account
-        budgets_response = budgets_api.get_budgets()
-        for budget in budgets_response.data.budgets:
-            try:
-                # Example: get transactions since the start of the month
-                since_date = datetime.now().replace(day=1).strftime("%Y-%m-%d")
-                response = transactions_api.get_transactions_by_account(
-                    budget.id, account_id, since_date=since_date
-                )
-                all_transactions.extend(txn.to_dict() for txn in response.data.transactions)
-                # If we found transactions, we found the right budget
-                if all_transactions:
-                    break
-            except ynab.ApiException:
-                # Account not found in this budget, try the next one
-                continue
+        # Example: get transactions since the start of the month
+        since_date = datetime.now().replace(day=1).strftime("%Y-%m-%d")
+        response = transactions_api.get_transactions_by_account(
+            budget_id, account_id, since_date=since_date
+        )
+        all_transactions.extend(txn.to_dict() for txn in response.data.transactions)
 
-        return all_transactions
+        # Build Markdown output for transactions
+        markdown = "# Recent Transactions\n\n"
+        markdown += "| Date       | Amount   | Payee Name                  | Category Name            | Memo  |\n"
+        markdown += "|------------|----------|-----------------------------|--------------------------|-------|\n"
+        for txn in all_transactions:
+            date = txn.get("date", "N/A")
+            amount = f"${txn.get('amount', 0) / 1000:,.2f}"
+            payee_name = txn.get("payee_name", "N/A")
+            category_name = txn.get("category_name", "N/A")
+            memo = txn.get("memo", "N/A")
+            markdown += f"| {date} | {amount} | {payee_name:<27} | {category_name:<24} | {memo} |\n"
+
+        return markdown

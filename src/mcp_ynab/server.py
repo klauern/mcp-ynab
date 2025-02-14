@@ -231,10 +231,35 @@ async def get_accounts(budget_id: str) -> str:
         for group in formatted["accounts"]:
             markdown += f"## {group['type']}\n"
             markdown += f"**Group Total:** {group['total']}\n\n"
-            markdown += "| Account Name               | Balance     | ID                                    |\n"
-            markdown += "|----------------------------|-------------|---------------------------------------|\n"
+
+            # Calculate column widths
+            headers = ["Account Name", "Balance", "ID"]
+            name_width = len(headers[0])
+            balance_width = len(headers[1])
+            id_width = len(headers[2])
+
+            # First pass to determine column widths
             for acct in group["accounts"]:
-                markdown += f"| {acct['name']:<26} | {acct['balance']:<11} | {acct['id']} |\n"
+                name_width = max(name_width, len(acct["name"]))
+                balance_width = max(balance_width, len(acct["balance"]))
+                id_width = max(id_width, len(acct["id"]))
+
+            # Add padding
+            name_width += 2
+            balance_width += 2
+            id_width += 2
+
+            # Build header and separator
+            header = f"| {headers[0]:<{name_width}} | {headers[1]:>{balance_width}} | {headers[2]:<{id_width}} |\n"
+            separator = f"|{'-' * name_width}|{'-' * balance_width}|{'-' * id_width}|\n"
+
+            markdown += header
+            markdown += separator
+
+            # Second pass: output data
+            for acct in group["accounts"]:
+                markdown += f"| {acct['name']:<{name_width}} | {acct['balance']:>{balance_width}} | {acct['id']:<{id_width}} |\n"
+
             markdown += "\n"
 
         return markdown
@@ -248,7 +273,7 @@ async def get_transactions(budget_id: str, account_id: str) -> str:
         all_transactions = []
 
         # Example: get transactions since the start of the month
-        since_date = datetime.now().replace(day=1).strftime("%Y-%m-%d")
+        since_date = datetime.now().replace(day=1).date()
         response = transactions_api.get_transactions_by_account(
             budget_id, account_id, since_date=since_date
         )
@@ -256,14 +281,300 @@ async def get_transactions(budget_id: str, account_id: str) -> str:
 
         # Build Markdown output for transactions
         markdown = "# Recent Transactions\n\n"
-        markdown += "| Date       | Amount   | Payee Name                  | Category Name            | Memo  |\n"
-        markdown += "|------------|----------|-----------------------------|--------------------------|-------|\n"
-        for txn in all_transactions:
-            date = txn.get("date", "N/A")
-            amount = f"${txn.get('amount', 0) / 1000:,.2f}"
-            payee_name = txn.get("payee_name", "N/A")
-            category_name = txn.get("category_name", "N/A")
-            memo = txn.get("memo", "N/A")
-            markdown += f"| {date} | {amount} | {payee_name:<27} | {category_name:<24} | {memo} |\n"
 
+        # Calculate column widths
+        headers = ["Date", "Amount", "Payee Name", "Category Name", "Memo"]
+        date_width = len(headers[0])
+        amount_width = len(headers[1])
+        payee_width = len(headers[2])
+        category_width = len(headers[3])
+        memo_width = len(headers[4])
+
+        # First pass to determine column widths
+        for txn in all_transactions:
+            date_str = txn.get("date", "N/A")
+            amount_str = f"${txn.get('amount', 0) / 1000:,.2f}"
+            payee_str = txn.get("payee_name", "N/A")
+            category_str = txn.get("category_name", "N/A")
+            memo_str = txn.get("memo", "N/A")
+
+            date_width = max(date_width, len(date_str))
+            amount_width = max(amount_width, len(amount_str))
+            payee_width = max(payee_width, len(payee_str))
+            category_width = max(category_width, len(category_str))
+            memo_width = max(memo_width, len(memo_str))
+
+        # Add padding
+        date_width += 2
+        amount_width += 2
+        payee_width += 2
+        category_width += 2
+        memo_width += 2
+
+        # Build header and separator
+        header = (
+            f"| {headers[0]:<{date_width}} "
+            f"| {headers[1]:>{amount_width}} "
+            f"| {headers[2]:<{payee_width}} "
+            f"| {headers[3]:<{category_width}} "
+            f"| {headers[4]:<{memo_width}} |\n"
+        )
+        separator = f"|{'-' * date_width}|{'-' * amount_width}|{'-' * payee_width}|{'-' * category_width}|{'-' * memo_width}|\n"
+
+        markdown += header
+        markdown += separator
+
+        # Second pass: output data
+        for txn in all_transactions:
+            date_str = txn.get("date", "N/A")
+            amount_str = f"${txn.get('amount', 0) / 1000:,.2f}"
+            payee_str = txn.get("payee_name", "N/A")
+            category_str = txn.get("category_name", "N/A")
+            memo_str = txn.get("memo", "N/A")
+
+            markdown += (
+                f"| {date_str:<{date_width}} "
+                f"| {amount_str:>{amount_width}} "
+                f"| {payee_str:<{payee_width}} "
+                f"| {category_str:<{category_width}} "
+                f"| {memo_str:<{memo_width}} |\n"
+            )
+
+        return markdown
+
+
+@mcp.tool()
+async def get_uncategorized_transactions(budget_id: str) -> str:
+    """List all uncategorized transactions for a given YNAB budget in Markdown format."""
+    with _get_client() as client:
+        accounts_api = ynab.AccountsApi(client)
+        transactions_api = ynab.TransactionsApi(client)
+
+        # Retrieve all active accounts in the budget
+        accounts_response = accounts_api.get_accounts(budget_id)
+        active_accounts = []
+        for account in accounts_response.data.accounts:
+            account_dict = account.to_dict()
+            if account_dict.get("closed") or account_dict.get("deleted"):
+                continue
+            active_accounts.append(account_dict)
+
+        # Define since_date as the first day of the current month (as a date object)
+        since_date = datetime.now().replace(day=1).date()
+
+        all_transactions = []
+        # Collect transactions from each active account
+        for account in active_accounts:
+            resp = transactions_api.get_transactions_by_account(
+                budget_id, account["id"], since_date=since_date
+            )
+            for txn in resp.data.transactions:
+                txn_dict = txn.to_dict()
+                txn_dict["account_name"] = account["name"]
+                all_transactions.append(txn_dict)
+
+        # Filter out only uncategorized transactions (where category_id is None or empty string)
+        uncategorized = [txn for txn in all_transactions if txn.get("category_id") in (None, "")]
+
+        markdown = "# Uncategorized Transactions\n\n"
+        if not uncategorized:
+            markdown += "_No uncategorized transactions found._"
+        else:
+            # Calculate column widths
+            headers = ["Date", "Account", "Amount", "Payee", "Memo"]
+            date_width = len(headers[0])
+            account_width = len(headers[1])
+            amount_width = len(headers[2])
+            payee_width = len(headers[3])
+            memo_width = len(headers[4])
+
+            # First pass to determine column widths
+            for txn in uncategorized:
+                date_str = str(txn.get("date", "N/A"))
+                account_name = txn.get("account_name", "N/A")
+                amount_dollars = float(txn.get("amount", 0)) / 1000
+                amount_str = f"${abs(amount_dollars):,.2f}"
+                if amount_dollars < 0:
+                    amount_str = f"-{amount_str}"
+                payee_name = txn.get("payee_name", "N/A")
+                memo = txn.get("memo", "N/A")
+
+                date_width = max(date_width, len(date_str))
+                account_width = max(account_width, len(account_name))
+                amount_width = max(amount_width, len(amount_str))
+                payee_width = max(payee_width, len(payee_name))
+                memo_width = max(memo_width, len(memo))
+
+            # Add padding
+            date_width += 2
+            account_width += 2
+            amount_width += 2
+            payee_width += 2
+            memo_width += 2
+
+            # Build header and separator
+            header = (
+                f"| {headers[0]:<{date_width}} "
+                f"| {headers[1]:<{account_width}} "
+                f"| {headers[2]:>{amount_width}} "
+                f"| {headers[3]:<{payee_width}} "
+                f"| {headers[4]:<{memo_width}} |\n"
+            )
+            separator = (
+                f"|{'-' * date_width}|{'-' * account_width}|{'-' * amount_width}|"
+                f"{'-' * payee_width}|{'-' * memo_width}|\n"
+            )
+
+            markdown += header
+            markdown += separator
+
+            # Second pass: output data
+            for txn in uncategorized:
+                date_str = str(txn.get("date", "N/A"))
+                account_name = txn.get("account_name", "N/A")
+                amount_dollars = float(txn.get("amount", 0)) / 1000
+                amount_str = f"${abs(amount_dollars):,.2f}"
+                if amount_dollars < 0:
+                    amount_str = f"-{amount_str}"
+                payee_name = txn.get("payee_name", "N/A")
+                memo = txn.get("memo", "N/A")
+
+                markdown += (
+                    f"| {date_str:<{date_width}} "
+                    f"| {account_name:<{account_width}} "
+                    f"| {amount_str:>{amount_width}} "
+                    f"| {payee_name:<{payee_width}} "
+                    f"| {memo:<{memo_width}} |\n"
+                )
+
+        return markdown
+
+
+@mcp.tool()
+async def categorize_transactions(budget_id: str, category_id: str) -> str:
+    """Categorize all uncategorized transactions for a given YNAB budget with the provided category ID."""
+    with _get_client() as client:
+        accounts_api = ynab.AccountsApi(client)
+        transactions_api = ynab.TransactionsApi(client)
+
+        # Retrieve all active accounts in the budget
+        accounts_response = accounts_api.get_accounts(budget_id)
+        active_accounts = []
+        for account in accounts_response.data.accounts:
+            account_dict = account.to_dict()
+            if account_dict.get("closed") or account_dict.get("deleted"):
+                continue
+            active_accounts.append(account_dict)
+
+        # Define since_date as the first day of the current month (as a date object)
+        since_date = datetime.now().replace(day=1).date()
+        updated_txns = []
+
+        # Loop over each account and update uncategorized transactions
+        for account in active_accounts:
+            resp = transactions_api.get_transactions_by_account(
+                budget_id, account["id"], since_date=since_date
+            )
+            for txn in resp.data.transactions:
+                txn_dict = txn.to_dict()
+                if txn_dict.get("category_id") in (None, ""):
+                    update_payload = {"transaction": {"category_id": category_id}}
+                    update_resp = transactions_api.update_transaction(
+                        budget_id, txn_dict["id"], update_payload
+                    )
+                    updated_txns.append(txn_dict["id"])
+
+        return f"Updated {len(updated_txns)} transactions with category ID {category_id}."
+
+
+@mcp.tool()
+async def get_categories(budget_id: str) -> str:
+    """List all transaction categories for a given YNAB budget in Markdown format."""
+    with _get_client() as client:
+        categories_api = ynab.CategoriesApi(client)
+        response = categories_api.get_categories(budget_id)
+        groups = response.data.category_groups
+
+        markdown = "# YNAB Categories\n\n"
+        for group in groups:
+            group_dict = group.to_dict() if hasattr(group, "to_dict") else group
+
+            # First pass: calculate maximum widths
+            id_width = len("Category ID")
+            name_width = len("Category Name")
+            budget_width = len("Budgeted")
+            activity_width = len("Activity")
+
+            # Examine all categories in this group to find maximum widths
+            for category in group_dict.get("categories", []):
+                cat = category.to_dict() if hasattr(category, "to_dict") else category
+                cat_id = cat.get("id", "N/A")
+                name = cat.get("name", "N/A")
+                budgeted = cat.get("budgeted", 0)
+                activity = cat.get("activity", 0)
+
+                # Calculate widths needed for this row
+                id_width = max(id_width, len(cat_id))
+                name_width = max(name_width, len(name))
+
+                # Convert milliunits to dollars for width calculation
+                budgeted_dollars = (
+                    float(budgeted) / 1000 if isinstance(budgeted, (int, float)) else 0
+                )
+                activity_dollars = (
+                    float(activity) / 1000 if isinstance(activity, (int, float)) else 0
+                )
+
+                budget_str = f"${abs(budgeted_dollars):,.2f}"
+                activity_str = f"${abs(activity_dollars):,.2f}"
+                if budgeted_dollars < 0:
+                    budget_str = f"-{budget_str}"
+                if activity_dollars < 0:
+                    activity_str = f"-{activity_str}"
+
+                budget_width = max(budget_width, len(budget_str))
+                activity_width = max(activity_width, len(activity_str))
+
+            # Add some padding between columns
+            id_width += 2
+            name_width += 2
+            budget_width += 2
+            activity_width += 2
+
+            # Create the header with calculated widths
+            header = f"| {'Category ID':<{id_width}} | {'Category Name':<{name_width}} | {'Budgeted':>{budget_width}} | {'Activity':>{activity_width}} |\n"
+            separator = f"|{'-' * (id_width + 2)}|{'-' * (name_width + 2)}|{'-' * (budget_width + 2)}|{'-' * (activity_width + 2)}|\n"
+
+            markdown += f"## {group_dict.get('name', 'Unnamed Group')}\n\n"
+            markdown += header
+            markdown += separator
+
+            # Second pass: output the data using calculated widths
+            for category in group_dict.get("categories", []):
+                cat = category.to_dict() if hasattr(category, "to_dict") else category
+                cat_id = cat.get("id", "N/A")
+                name = cat.get("name", "N/A")
+                budgeted = cat.get("budgeted", 0)
+                activity = cat.get("activity", 0)
+
+                # Convert milliunits to dollars
+                budgeted_dollars = (
+                    float(budgeted) / 1000 if isinstance(budgeted, (int, float)) else 0
+                )
+                activity_dollars = (
+                    float(activity) / 1000 if isinstance(activity, (int, float)) else 0
+                )
+
+                # Format with consistent sign placement
+                budget_str = f"${abs(budgeted_dollars):,.2f}"
+                if budgeted_dollars < 0:
+                    budget_str = f"-{budget_str}"
+
+                activity_str = f"${abs(activity_dollars):,.2f}"
+                if activity_dollars < 0:
+                    activity_str = f"-{activity_str}"
+
+                markdown += f"| {cat_id:<{id_width}} | {name:<{name_width}} | {budget_str:>{budget_width}} | {activity_str:>{activity_width}} |\n"
+
+            markdown += "\n"
         return markdown

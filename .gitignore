@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# local preference files
+.config/mcp-ynab/
+preferred_budget_id.json
+budget_category_cache.json

@@ -1,30 +1,72 @@
+import json
 import os
-from datetime import datetime
-from typing import Annotated, Any, Dict, List, Optional
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Annotated, Any, Dict, List, Optional, cast
 
 import mcp.types as types  # Import MCP types
-import ynab
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
+from xdg import XDG_CONFIG_HOME
+from ynab.api.accounts_api import AccountsApi
+from ynab.api.budgets_api import BudgetsApi
+from ynab.api.categories_api import CategoriesApi
+from ynab.api.transactions_api import TransactionsApi
+from ynab.api_client import ApiClient
+from ynab.configuration import Configuration
+from ynab.models.account import Account
+from ynab.models.category import Category
+from ynab.models.category_group_with_categories import CategoryGroupWithCategories
+from ynab.models.existing_transaction import ExistingTransaction
+from ynab.models.new_transaction import NewTransaction
+from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
+from ynab.models.put_transaction_wrapper import PutTransactionWrapper
+from ynab.models.transaction_detail import TransactionDetail
 
 # 1. Load environment variables
 load_dotenv(verbose=True)
 
 # 2. Globals / configuration
 ynab_api_key = os.environ.get("YNAB_API_KEY")
-PREFERRED_BUDGET_ID_FILE = "preferred_budget_id.json"  # File to store preferred budget ID
-# CATEGORY_CACHE: Dict[str, List[Dict[str, Any]]] = {}  # Category cache - No longer needed here
+
+# Set up XDG config directory
+CONFIG_DIR = Path(XDG_CONFIG_HOME) / "mcp-ynab"
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+PREFERRED_BUDGET_ID_FILE = CONFIG_DIR / "preferred_budget_id.json"
+BUDGET_CATEGORY_CACHE_FILE = CONFIG_DIR / "budget_category_cache.json"
 
 # 3. Private helper functions
 
 
-def _get_client() -> ynab.ApiClient:
+async def _get_client() -> ApiClient:
     """Get a configured YNAB API client. Reads API key from environment variables."""
     if not ynab_api_key:
         raise ValueError("YNAB_API_KEY not found in environment variables")
-    configuration = ynab.Configuration(access_token=ynab_api_key)
-    return ynab.ApiClient(configuration)
+    configuration = Configuration(access_token=ynab_api_key)
+    return ApiClient(configuration)
+
+
+class AsyncYNABClient:
+    """Async context manager for YNAB API client."""
+
+    def __init__(self):
+        self.client: Optional[ApiClient] = None
+
+    async def __aenter__(self) -> ApiClient:
+        self.client = await _get_client()
+        return self.client
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.client:
+            # ApiClient doesn't have a close method, but we'll keep the context manager pattern
+            pass
+
+
+async def get_ynab_client() -> AsyncYNABClient:
+    """Get an async YNAB client context manager."""
+    return AsyncYNABClient()
 
 
 def _build_markdown_table(
@@ -75,7 +117,7 @@ def _build_markdown_table(
 
 def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Format account data into a user-friendly structure."""
-    account_groups = {}
+    account_groups: Dict[str, List[Dict[str, Any]]] = {}
     type_order = [
         "checking",
         "savings",
@@ -119,12 +161,12 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
     for group in account_groups.values():
         group.sort(key=lambda x: abs(x["balance_raw"]), reverse=True)
 
-    output = {
+    output: Dict[str, Any] = {
         "accounts": [],
         "summary": {
-            "total_assets": 0,
-            "total_liabilities": 0,
-            "net_worth": 0,
+            "total_assets": 0.0,
+            "total_liabilities": 0.0,
+            "net_worth": 0.0,
         },
     }
 
@@ -160,29 +202,19 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
     return output
 
 
-def _load_preferred_budget_id() -> Optional[str]:
-    """Load the preferred budget ID from file."""
+def _load_json_file(filename: str | Path) -> Dict[str, Any]:
+    """Load JSON data from a file."""
     try:
-        with open(PREFERRED_BUDGET_ID_FILE, "r") as f:
-            return f.read().strip()
+        with open(filename, "r") as f:
+            return json.load(f)
     except FileNotFoundError:
-        return None
+        return {}
 
 
-def _save_preferred_budget_id(budget_id: str) -> None:
-    """Save the preferred budget ID to file."""
-    with open(PREFERRED_BUDGET_ID_FILE, "w") as f:
-        f.write(budget_id)
-
-
-# def _get_cached_categories(budget_id: str) -> Optional[List[Dict[str, Any]]]:
-#     """Get categories from the cache."""
-#     return CATEGORY_CACHE.get(budget_id)
-
-
-# def _cache_categories(budget_id: str, categories: List[Dict[str, Any]]) -> None:
-#     """Cache categories for a budget ID."""
-#     CATEGORY_CACHE[budget_id] = categories
+def _save_json_file(filename: str | Path, data: Dict[str, Any]) -> None:
+    """Save JSON data to a file."""
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=2)
 
 
 # 4. Create the MCP server instance
@@ -192,8 +224,22 @@ mcp = FastMCP("YNAB")
 # Define resources
 class YNABResources:
     def __init__(self):
-        self._preferred_budget_id = _load_preferred_budget_id()
+        self._preferred_budget_id: Optional[str] = None
         self._category_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._load_data()
+
+    def _load_data(self) -> None:
+        """Load data from files."""
+        try:
+            with open(PREFERRED_BUDGET_ID_FILE, "r") as f:
+                self._preferred_budget_id = f.read().strip() or None
+        except FileNotFoundError:
+            self._preferred_budget_id = None
+
+        try:
+            self._category_cache = _load_json_file(BUDGET_CATEGORY_CACHE_FILE)
+        except FileNotFoundError:
+            self._category_cache = {}
 
     def get_preferred_budget_id(self) -> Optional[str]:
         """Get the preferred budget ID."""
@@ -202,17 +248,12 @@ class YNABResources:
     def set_preferred_budget_id(self, budget_id: str) -> None:
         """Set the preferred budget ID."""
         self._preferred_budget_id = budget_id
-        _save_preferred_budget_id(budget_id)
-
-    # def get_cached_categories(self, budget_id: str) -> Optional[List[Dict[str, Any]]]:
-    #     return self._category_cache.get(budget_id)
+        with open(PREFERRED_BUDGET_ID_FILE, "w") as f:
+            f.write(budget_id)
 
     def get_cached_categories(self, budget_id: str) -> list[types.TextContent]:
         """Get categories from the cache formatted for MCP resources."""
-        cached_categories = self._category_cache.get(budget_id)
-        if not cached_categories:
-            return []
-
+        cached_categories = self._category_cache.get(budget_id, [])
         return [
             types.TextContent(
                 type="text", text=f"{cat.get('name', 'Unnamed')} (ID: {cat.get('id', 'N/A')})"
@@ -222,7 +263,15 @@ class YNABResources:
 
     def cache_categories(self, budget_id: str, categories: List[Dict[str, Any]]) -> None:
         """Cache categories for a budget ID."""
-        self._category_cache[budget_id] = categories
+        self._category_cache[budget_id] = [
+            {
+                "id": cat.get("id"),
+                "name": cat.get("name"),
+                "group": cat.get("category_group_name"),
+            }
+            for cat in categories
+        ]
+        _save_json_file(BUDGET_CATEGORY_CACHE_FILE, self._category_cache)
 
 
 # Instantiate the resources
@@ -254,30 +303,21 @@ async def create_transaction(
     memo: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new transaction in YNAB."""
-    with _get_client() as client:
-        transactions_api = ynab.TransactionsApi(client)
-        budgets_api = ynab.BudgetsApi(client)
+    async with await get_ynab_client() as client:
+        transactions_api = TransactionsApi(client)
+        budgets_api = BudgetsApi(client)
 
         amount_milliunits = int(amount * 1000)
 
         # Use preferred budget ID if available, otherwise fetch a list of budgets
-        budget_id = ynab_resources.preferred_budget_id
+        budget_id = ynab_resources.get_preferred_budget_id()
         if not budget_id:
             budgets_response = budgets_api.get_budgets()
             budget_id = budgets_response.data.budgets[0].id
 
         category_id = None
         if category_name:
-            # Use cached categories if available
-            # cached_categories = ynab_resources.get_cached_categories(budget_id)
-            # if cached_categories:
-            #     for cat in cached_categories:
-            #         if cat.get("name", "").lower() == category_name.lower():
-            #             category_id = cat.get("id")
-            #             break
-            # else:
-            # Fetch categories from API if not cached
-            categories_api = ynab.CategoriesApi(client)
+            categories_api = CategoriesApi(client)
             categories_response = categories_api.get_categories(budget_id)
             categories = categories_response.data.category_groups
             for group in categories:
@@ -288,25 +328,29 @@ async def create_transaction(
                 if category_id:
                     break
 
-        transaction = {
-            "account_id": account_id,
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "amount": amount_milliunits,
-            "payee_name": payee_name,
-            "memo": memo,
-            "category_id": category_id,
-        }
+        # Create transaction data
+        transaction = NewTransaction(
+            account_id=account_id,
+            date=date.today(),
+            amount=amount_milliunits,
+            payee_name=payee_name,
+            memo=memo,
+            category_id=category_id,
+        )
 
-        response = transactions_api.create_transaction(budget_id, {"transaction": transaction})
-        return response.data.transaction.to_dict()
+        wrapper = PostTransactionsWrapper(transaction=transaction)
+        response = transactions_api.create_transaction(budget_id, wrapper)
+        if response.data and response.data.transaction:
+            return response.data.transaction.to_dict()
+        return {}
 
 
 @mcp.tool()
 async def get_account_balance(account_id: str) -> float:
     """Get the current balance of a YNAB account (in dollars)."""
-    with _get_client() as client:
-        accounts_api = ynab.AccountsApi(client)
-        budgets_api = ynab.BudgetsApi(client)
+    async with await get_ynab_client() as client:
+        accounts_api = AccountsApi(client)
+        budgets_api = BudgetsApi(client)
         budgets_response = budgets_api.get_budgets()
         budget_id = budgets_response.data.budgets[0].id
 
@@ -317,8 +361,8 @@ async def get_account_balance(account_id: str) -> float:
 @mcp.tool()
 async def get_budgets() -> str:
     """List all YNAB budgets in Markdown format."""
-    with _get_client() as client:
-        budgets_api = ynab.BudgetsApi(client)
+    async with await get_ynab_client() as client:
+        budgets_api = BudgetsApi(client)
         budgets_response = budgets_api.get_budgets()
         budgets_list = budgets_response.data.budgets
 
@@ -335,11 +379,13 @@ async def get_budgets() -> str:
 @mcp.tool()
 async def get_accounts(budget_id: str) -> str:
     """List all YNAB accounts in a specific budget in Markdown format."""
-    with _get_client() as client:
-        accounts_api = ynab.AccountsApi(client)
-        all_accounts = []
+    async with await get_ynab_client() as client:
+        accounts_api = AccountsApi(client)
+        all_accounts: List[Dict[str, Any]] = []
         response = accounts_api.get_accounts(budget_id)
-        all_accounts.extend(account.to_dict() for account in response.data.accounts)
+        for account in response.data.accounts:
+            if isinstance(account, Account):
+                all_accounts.append(account.to_dict())
 
         formatted = _format_accounts_output(all_accounts)
 
@@ -349,9 +395,6 @@ async def get_accounts(budget_id: str) -> str:
         markdown += f"- **Total Liabilities:** {formatted['summary']['total_liabilities']}\n"
         markdown += f"- **Net Worth:** {formatted['summary']['net_worth']}\n\n"
 
-        headers = ["Account Name", "Balance", "ID"]
-        align = ["left", "right", "left"]
-
         for group in formatted["accounts"]:
             markdown += f"## {group['type']}\n"
             markdown += f"**Group Total:** {group['total']}\n\n"
@@ -360,7 +403,9 @@ async def get_accounts(budget_id: str) -> str:
             for acct in group["accounts"]:
                 rows.append([acct["name"], acct["balance"], acct["id"]])
 
-            markdown += _build_markdown_table(rows, headers, align)
+            markdown += _build_markdown_table(
+                rows, ["Account Name", "Balance", "ID"], ["left", "right", "left"]
+            )
             markdown += "\n"
 
         return markdown
@@ -369,36 +414,33 @@ async def get_accounts(budget_id: str) -> str:
 @mcp.tool()
 async def get_transactions(budget_id: str, account_id: str) -> str:
     """Get recent transactions for a specific account in a specific budget."""
-    with _get_client() as client:
-        transactions_api = ynab.TransactionsApi(client)
-        all_transactions = []
+    async with await get_ynab_client() as client:
+        transactions_api = TransactionsApi(client)
+        all_transactions: List[TransactionDetail] = []
         since_date = datetime.now().replace(day=1).date()
         response = transactions_api.get_transactions_by_account(
             budget_id, account_id, since_date=since_date
         )
-        all_transactions.extend(txn.to_dict() for txn in response.data.transactions)
+        all_transactions.extend(response.data.transactions)
 
         markdown = "# Recent Transactions\n\n"
         if not all_transactions:
             return markdown + "_No recent transactions found._\n"
 
-        headers = ["Date", "Amount", "Payee Name", "Category Name", "Memo"]
-        align = ["left", "right", "left", "left", "left"]
+        headers = ["ID", "Date", "Amount", "Payee Name", "Category Name", "Memo"]
+        align = ["left", "left", "right", "left", "left", "left"]
         rows = []
 
         for txn in all_transactions:
-            date_str = txn.get("date", "N/A")
-            amount_str = f"${txn.get('amount', 0) / 1000:,.2f}"
-            payee_str = txn.get("payee_name", "N/A")
-            category_str = txn.get("category_name", "N/A")
-            memo_str = txn.get("memo", "N/A") or ""
+            amount_str = f"${txn.amount / 1000:,.2f}"
             rows.append(
                 [
-                    date_str,
+                    txn.id,
+                    txn.var_date.strftime("%Y-%m-%d"),
                     amount_str,
-                    payee_str,
-                    category_str,
-                    memo_str,
+                    txn.payee_name or "N/A",
+                    txn.category_name or "N/A",
+                    txn.memo or "",
                 ]
             )
 
@@ -409,54 +451,50 @@ async def get_transactions(budget_id: str, account_id: str) -> str:
 @mcp.tool()
 async def get_uncategorized_transactions(budget_id: str) -> str:
     """List all uncategorized transactions for a given YNAB budget in Markdown format."""
-    with _get_client() as client:
-        accounts_api = ynab.AccountsApi(client)
-        transactions_api = ynab.TransactionsApi(client)
+    async with await get_ynab_client() as client:
+        accounts_api = AccountsApi(client)
+        transactions_api = TransactionsApi(client)
         accounts_response = accounts_api.get_accounts(budget_id)
-        active_accounts = []
-        for account in accounts_response.data.accounts:
-            account_dict = account.to_dict()
-            if account_dict.get("closed") or account_dict.get("deleted"):
-                continue
-            active_accounts.append(account_dict)
+        active_accounts = [
+            account
+            for account in accounts_response.data.accounts
+            if not account.closed and not account.deleted
+        ]
 
         since_date = datetime.now().replace(day=1).date()
-        all_transactions = []
+        all_transactions: List[TransactionDetail] = []
         for account in active_accounts:
             resp = transactions_api.get_transactions_by_account(
-                budget_id, account["id"], since_date=since_date
+                budget_id, account.id, since_date=since_date
             )
             for txn in resp.data.transactions:
-                txn_dict = txn.to_dict()
-                txn_dict["account_name"] = account["name"]
-                all_transactions.append(txn_dict)
+                if isinstance(txn, TransactionDetail):
+                    txn.account_name = account.name  # type: ignore
+                    all_transactions.append(txn)
 
-        uncategorized = [txn for txn in all_transactions if txn.get("category_id") in (None, "")]
+        uncategorized = [txn for txn in all_transactions if not txn.category_id]
 
         markdown = "# Uncategorized Transactions\n\n"
         if not uncategorized:
             return markdown + "_No uncategorized transactions found._"
 
-        headers = ["Date", "Account", "Amount", "Payee", "Memo"]
-        align = ["left", "left", "right", "left", "left"]
+        headers = ["ID", "Date", "Account", "Amount", "Payee", "Memo"]
+        align = ["left", "left", "right", "left", "left", "left"]
         rows = []
 
         for txn in uncategorized:
-            date_str = str(txn.get("date", "N/A"))
-            account_name = txn.get("account_name", "N/A")
-            amount_dollars = float(txn.get("amount", 0)) / 1000
+            amount_dollars = float(txn.amount) / 1000
             amount_str = f"${abs(amount_dollars):,.2f}"
             if amount_dollars < 0:
                 amount_str = f"-{amount_str}"
-            payee_name = txn.get("payee_name", "N/A")
-            memo = txn.get("memo", "") or ""
             rows.append(
                 [
-                    date_str,
-                    account_name,
+                    txn.id,
+                    txn.var_date.strftime("%Y-%m-%d"),
+                    txn.account_name,  # type: ignore
                     amount_str,
-                    payee_name,
-                    memo,
+                    txn.payee_name or "N/A",
+                    txn.memo or "",
                 ]
             )
 
@@ -465,68 +503,208 @@ async def get_uncategorized_transactions(budget_id: str) -> str:
 
 
 @mcp.tool()
-async def categorize_transactions(budget_id: str, category_id: str) -> str:
-    """Categorize all uncategorized transactions for a given YNAB budget with the provided category ID."""
-    with _get_client() as client:
-        accounts_api = ynab.AccountsApi(client)
-        transactions_api = ynab.TransactionsApi(client)
+async def get_transactions_needing_attention(
+    budget_id: str,
+    include_uncategorized: bool = True,
+    include_unapproved: bool = True,
+    days_back: Optional[int] = 30,
+) -> str:
+    """List transactions that need attention (uncategorized or unapproved) in a YNAB budget.
+
+    Args:
+        budget_id: The YNAB budget ID
+        include_uncategorized: Include transactions missing categories
+        include_unapproved: Include transactions that aren't approved
+        days_back: Number of days to look back (default 30, None for all)
+    """
+    async with await get_ynab_client() as client:
+        transactions_api = TransactionsApi(client)
+        accounts_api = AccountsApi(client)
+
+        # Get active accounts for reference
         accounts_response = accounts_api.get_accounts(budget_id)
-        active_accounts = []
-        for account in accounts_response.data.accounts:
-            account_dict = account.to_dict()
-            if account_dict.get("closed") or account_dict.get("deleted"):
-                continue
-            active_accounts.append(account_dict)
+        account_map = {
+            account.id: account.name
+            for account in accounts_response.data.accounts
+            if not account.closed and not account.deleted
+        }
 
-        since_date = datetime.now().replace(day=1).date()
-        updated_txns = []
-        for account in active_accounts:
-            resp = transactions_api.get_transactions_by_account(
-                budget_id, account["id"], since_date=since_date
+        # Calculate since_date if days_back is specified
+        since_date = None
+        if days_back is not None:
+            since_date = (datetime.now() - timedelta(days=days_back)).date()
+
+        # Get transactions
+        response = transactions_api.get_transactions(budget_id, since_date=since_date)
+        needs_attention: List[TransactionDetail] = []
+
+        for txn in response.data.transactions:
+            if isinstance(txn, TransactionDetail):
+                needs_category = include_uncategorized and not txn.category_id
+                needs_approval = include_unapproved and not txn.approved
+                if needs_category or needs_approval:
+                    needs_attention.append(txn)
+
+        markdown = "# Transactions Needing Attention\n\n"
+        if not needs_attention:
+            return markdown + "_No transactions need attention._"
+
+        # Add filter information
+        markdown += "**Filters Applied:**\n"
+        markdown += f"- Including uncategorized: {include_uncategorized}\n"
+        markdown += f"- Including unapproved: {include_unapproved}\n"
+        if days_back:
+            markdown += f"- Looking back {days_back} days\n"
+        markdown += "\n"
+
+        headers = ["ID", "Date", "Account", "Amount", "Payee", "Status", "Memo"]
+        align = ["left", "left", "left", "right", "left", "left", "left"]
+        rows = []
+
+        for txn in needs_attention:
+            amount_dollars = float(txn.amount) / 1000
+            amount_str = f"${abs(amount_dollars):,.2f}"
+            if amount_dollars < 0:
+                amount_str = f"-{amount_str}"
+
+            status = []
+            if not txn.category_id:
+                status.append("Uncategorized")
+            if not txn.approved:
+                status.append("Unapproved")
+
+            rows.append(
+                [
+                    txn.id,
+                    txn.var_date.strftime("%Y-%m-%d"),
+                    account_map.get(txn.account_id, "Unknown"),
+                    amount_str,
+                    txn.payee_name or "N/A",
+                    ", ".join(status),
+                    txn.memo or "",
+                ]
             )
-            for txn in resp.data.transactions:
-                txn_dict = txn.to_dict()
-                if txn_dict.get("category_id") in (None, ""):
-                    update_payload = {"transaction": {"category_id": category_id}}
-                    transactions_api.update_transaction(budget_id, txn_dict["id"], update_payload)
-                    updated_txns.append(txn_dict["id"])
 
-        return f"Updated {len(updated_txns)} transactions with category ID {category_id}."
+        markdown += _build_markdown_table(rows, headers, align)
+        return markdown
+
+
+@mcp.tool()
+async def categorize_transaction(
+    budget_id: str,
+    transaction_id: str,
+    category_id: str,
+    id_type: str = "id",  # One of: "id", "import_id", "transfer_transaction_id", "matched_transaction_id"
+) -> str:
+    """Categorize a transaction for a given YNAB budget with the provided category ID.
+
+    Args:
+        budget_id: The YNAB budget ID
+        transaction_id: The transaction identifier
+        category_id: The category ID to assign
+        id_type: The type of transaction ID being provided. One of:
+                - "id": Direct transaction ID (default)
+                - "import_id": YNAB import ID format (YNAB:[milliunit_amount]:[iso_date]:[occurrence])
+                - "transfer_transaction_id": ID of a transfer transaction
+                - "matched_transaction_id": ID of a matched transaction
+    """
+    async with await get_ynab_client() as client:
+        transactions_api = TransactionsApi(client)
+
+        # First get all transactions and find the one matching our criteria
+        since_date = None
+        if id_type == "import_id" and ":" in transaction_id:
+            # For import_id we can extract the date to optimize the search
+            parts = transaction_id.split(":")
+            if len(parts) >= 3:
+                try:
+                    since_date = datetime.strptime(parts[2], "%Y-%m-%d").date()
+                except ValueError:
+                    pass
+
+        response = transactions_api.get_transactions(budget_id, since_date=since_date)
+        target_transaction = None
+
+        for txn in response.data.transactions:
+            if id_type == "id" and txn.id == transaction_id:
+                target_transaction = txn
+                break
+            elif id_type == "import_id" and txn.import_id == transaction_id:
+                target_transaction = txn
+                break
+            elif (
+                id_type == "transfer_transaction_id"
+                and txn.transfer_transaction_id == transaction_id
+            ):
+                target_transaction = txn
+                break
+            elif (
+                id_type == "matched_transaction_id" and txn.matched_transaction_id == transaction_id
+            ):
+                target_transaction = txn
+                break
+
+        if target_transaction:
+            wrapper = PutTransactionWrapper(
+                transaction=ExistingTransaction(
+                    account_id=target_transaction.account_id,
+                    amount=target_transaction.amount,
+                    category_id=category_id,
+                )
+            )
+            transactions_api.update_transaction(
+                budget_id=budget_id,
+                transaction_id=target_transaction.id,  # Always use the main ID for updates
+                data=wrapper,
+            )
+            return f"Transaction {transaction_id} (type: {id_type}) categorized as {category_id}."
+
+        return f"Transaction {transaction_id} (type: {id_type}) not found."
 
 
 @mcp.tool()
 async def get_categories(budget_id: str) -> str:
     """List all transaction categories for a given YNAB budget in Markdown format."""
-    with _get_client() as client:
-        categories_api = ynab.CategoriesApi(client)
+    async with await get_ynab_client() as client:
+        categories_api = CategoriesApi(client)
         response = categories_api.get_categories(budget_id)
         groups = response.data.category_groups
 
         markdown = "# YNAB Categories\n\n"
         for group in groups:
-            group_dict = group.to_dict() if hasattr(group, "to_dict") else group
-            categories_list = group_dict.get("categories", [])
+            if isinstance(group, CategoryGroupWithCategories):
+                categories_list = group.categories
+                group_name = group.name
+            else:
+                group_dict = cast(Dict[str, Any], group.to_dict())
+                categories_list = group_dict["categories"]
+                group_name = group_dict["name"]
+
             if not categories_list:
                 continue
 
-            markdown += f"## {group_dict.get('name', 'Unnamed Group')}\n\n"
+            markdown += f"## {group_name}\n\n"
 
             headers = ["Category ID", "Category Name", "Budgeted", "Activity"]
             align = ["left", "left", "right", "right"]
             rows = []
 
             for category in categories_list:
-                cat = category.to_dict() if hasattr(category, "to_dict") else category
-                cat_id = cat.get("id", "N/A")
-                name = cat.get("name", "N/A")
-                budgeted = cat.get("budgeted", 0)
-                activity = cat.get("activity", 0)
-                budgeted_dollars = (
-                    float(budgeted) / 1000 if isinstance(budgeted, (int, float)) else 0
-                )
-                activity_dollars = (
-                    float(activity) / 1000 if isinstance(activity, (int, float)) else 0
-                )
+                if isinstance(category, Category):
+                    cat_id = category.id
+                    name = category.name
+                    budgeted = category.budgeted
+                    activity = category.activity
+                else:
+                    cat_dict = cast(Dict[str, Any], category.to_dict())
+                    cat_id = cat_dict["id"]
+                    name = cat_dict["name"]
+                    budgeted = cat_dict["budgeted"]
+                    activity = cat_dict["activity"]
+
+                budgeted_dollars = float(budgeted) / 1000 if budgeted else 0
+                activity_dollars = float(activity) / 1000 if activity else 0
+
                 budget_str = f"${abs(budgeted_dollars):,.2f}"
                 if budgeted_dollars < 0:
                     budget_str = f"-{budget_str}"
@@ -558,15 +736,14 @@ async def set_preferred_budget_id(budget_id: str) -> str:
 @mcp.tool()
 async def cache_categories(budget_id: str) -> str:
     """Cache all categories for a given YNAB budget ID."""
-    with _get_client() as client:
-        categories_api = ynab.CategoriesApi(client)
+    async with await get_ynab_client() as client:
+        categories_api = CategoriesApi(client)
         response = categories_api.get_categories(budget_id)
         groups = response.data.category_groups
         categories = []
         for group in groups:
-            group_dict = group.to_dict() if hasattr(group, "to_dict") else group
-            categories_list = group_dict.get("categories", [])
-            categories.extend(categories_list)
+            if isinstance(group, CategoryGroupWithCategories):
+                categories.extend(group.categories)
 
-        ynab_resources.cache_categories(budget_id, categories)
+        ynab_resources.cache_categories(budget_id, [cat.to_dict() for cat in categories])
         return f"Categories cached for budget ID {budget_id}"

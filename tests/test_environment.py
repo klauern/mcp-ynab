@@ -18,3 +18,7 @@ def test_ynab_api_connection(ynab_client):
     budgets_response = budgets_api.get_budgets()
     assert budgets_response.data.budgets is not None
     assert len(budgets_response.data.budgets) > 0
+
+
+def test_preferences_files_exist():
+    """Test that the preference file is loaded, and if not, returns None."""

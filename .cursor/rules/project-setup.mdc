@@ -1,0 +1,12 @@
+---
+description: Understanding the project structure
+globs: pyproject.toml,**/*.py
+---
+
+# Project structure
+
+This project is an MCP server [mcp.mdc](mdc:.cursor/rules/mcp.mdc) that implements an interface to the YNAB budget and the `ynab` Python Package.
+
+Dependencies and scaffolding are using the `uv` package tool, so all installs, etc., should be run with that in mind (uv add, sync, run, etc.).
+
+All commonly-run tasks need to be defined in [Taskfile.yml](mdc:Taskfile.yml).  If there isn't an appropriate task already defined, we should create one.

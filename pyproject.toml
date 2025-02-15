@@ -13,9 +13,6 @@ dependencies = [
   "xdg>=6.0.0",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=7.0.0", "black>=24.0.0", "ruff>=0.2.0"]
-
 [tool.ruff]
 line-length = 100
 target-version = "py312"
@@ -32,12 +29,20 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-dev = ["mypy>=1.15.0", "pytest>=8.3.4", "pytest-cov>=6.0.0", "ruff>=0.9.4"]
+dev = [
+  "pytest>=8.3.4",
+  "pytest-asyncio>=0.25.3",
+  "pytest-cov>=6.0.0",
+  "black>=24.0.0",
+  "ruff>=0.9.4",
+  "mypy>=1.15.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
   "integration: marks tests as integration tests that require YNAB API access",
+  "asyncio: mark tests as async tests",
 ]
 addopts = "-v -ra --strict-markers -m 'not integration'"

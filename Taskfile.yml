@@ -27,3 +27,18 @@ tasks:
     desc: "Run the tests"
     cmds:
       - pytest
+
+  test:integration:
+    desc: "Run the integration tests"
+    cmds:
+      - pytest -m "integration"
+
+  test:all:
+    desc: "Run all tests including integration tests"
+    cmds:
+      - pytest -m ""
+
+  coverage:
+    desc: "Run tests with coverage reporting"
+    cmds:
+      - pytest --cov=src/mcp_ynab --cov-report=term-missing --cov-report=html -m ""

@@ -2,11 +2,11 @@
 description: MCP project implementation details
 globs: **/*.txt,**/*.md
 ---
-# Model Context Protocol (MCP) Help
+# Model Context Protocol (MCP) Repo Help
 
-There are some docs to help composing an MCP-compliant server:
+This repository houses an MCP server that interfaces with You Need A Budget (YNAB).  How to build an MCP server is documented below:
 
-- https://modelcontextprotocol.io/llms-full.txt
-- https://github.com/modelcontextprotocol/python-sdk
+- https://modelcontextprotocol.io/llms-full.txt (or [llms-full.txt](mdc:docs/llms-full.txt))
+- https://github.com/modelcontextprotocol/python-sdk (or @mcp-py-sdk.md )
 
-You can also use [llms-full.txt](mdc:docs/llms-full.txt) and [mcp-py-sdk.md](mdc:docs/mcp-py-sdk.md) to reference how to implement features of the Python version of the MCP protocol.
+Use the references when creating new resources, tools, or other components, and reference the Python SDK when trying to understand how to use SDK primitives.

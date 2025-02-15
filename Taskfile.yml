@@ -1,0 +1,29 @@
+# https://taskfile.dev
+
+version: "3"
+
+vars:
+  GREETING: Hello, World!
+
+tasks:
+  dev:
+    desc: "Run the MCP server in development mode"
+    cmds:
+      - uv run mcp dev src/mcp_ynab/server.py
+
+  deps:
+    desc: "Synchronize dependencies"
+    cmds:
+      - uv sync
+      - npm install --global @modelcontextprotocol/inspector
+
+  install:
+    desc: "Install the package locally"
+    cmds:
+      - uv sync
+      - uv pip install .
+
+  test:
+    desc: "Run the tests"
+    cmds:
+      - pytest

@@ -11,27 +11,29 @@ An MCP server implementation that provides access to YNAB (You Need A Budget) fu
 ## Installation
 
 ```bash
-pip install -e .
+uv pip install -e .
 ```
 
 ## Configuration
 
 The server requires a YNAB API key to function. You can obtain one from your [YNAB Developer Settings](https://app.ynab.com/settings/developer).
 
-The API key can be provided in two ways:
-1. As an environment variable: `YNAB_API_KEY=your_api_key`
-2. Through the MCP secret system when running the server
+The API key can be provided through:
+
+1. Environment variable: `YNAB_API_KEY=your_api_key`
+2. MCP secret management system
+3. `.env` file in project root
 
 ## Usage
 
 ### Running the Server
 
 ```bash
-# Development mode with the MCP Inspector
-mcp dev src/mcp_ynab/server.py
+# Development mode with hot reload and browser launch
+task dev
 
-# Install in Claude Desktop
-mcp install src/mcp_ynab/server.py
+# Production install for Claude Desktop, Goose, or any other MCP-supported environment
+task install
 ```
 
 ### Available Resources
@@ -69,13 +71,29 @@ transactions = await ctx.read_resource(f"ynab://transactions/{account_id}")
 ## Development
 
 ```bash
-# Install development dependencies
-pip install -e ".[dev]"
+# Install dependencies (uses uv)
+task deps
 
-# Run tests
-pytest
+# Run all tests including integration tests (you will need a YNAB API key for this)
+task test:all
 
-# Format code
-black src/
-ruff check src/ --fix
+# Generate coverage report
+task coverage
+
+# Format and lint code
+task fmt  # Should add this to Taskfile
 ```
+
+## Project Tasks
+
+This project uses a Taskfile for common operations. Key commands:
+
+```bash
+task dev       # Start dev server with auto-reload
+task test      # Run unit tests
+task coverage  # Generate test coverage report
+task install   # Install production build
+task deps      # Synchronize dependencies
+```
+
+See [Taskfile.yml](Taskfile.yml) for all available tasks.

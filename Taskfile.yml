@@ -33,6 +33,7 @@ tasks:
     cmds:
       - uv sync
       - uv pip install .
+      - echo "installed mcp-ynab at $(which mcp-ynab)"
 
   test:
     desc: "Run the tests"
@@ -53,3 +54,9 @@ tasks:
     desc: "Run tests with coverage reporting"
     cmds:
       - pytest --cov=src/mcp_ynab --cov-report=term-missing --cov-report=html -m ""
+
+  fmt:
+    desc: "Format and lint code"
+    cmds:
+      - ruff format src/ tests/
+      - ruff check src/ tests/ --fix

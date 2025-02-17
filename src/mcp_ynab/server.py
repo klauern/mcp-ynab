@@ -449,77 +449,33 @@ async def get_transactions(budget_id: str, account_id: str) -> str:
 
 
 @mcp.tool()
-async def get_uncategorized_transactions(budget_id: str) -> str:
-    """List all uncategorized transactions for a given YNAB budget in Markdown format."""
-    async with await get_ynab_client() as client:
-        accounts_api = AccountsApi(client)
-        transactions_api = TransactionsApi(client)
-        accounts_response = accounts_api.get_accounts(budget_id)
-        active_accounts = [
-            account
-            for account in accounts_response.data.accounts
-            if not account.closed and not account.deleted
-        ]
-
-        since_date = datetime.now().replace(day=1).date()
-        all_transactions: List[TransactionDetail] = []
-        for account in active_accounts:
-            resp = transactions_api.get_transactions_by_account(
-                budget_id, account.id, since_date=since_date
-            )
-            for txn in resp.data.transactions:
-                if isinstance(txn, TransactionDetail):
-                    txn.account_name = account.name  # type: ignore
-                    all_transactions.append(txn)
-
-        uncategorized = [txn for txn in all_transactions if not txn.category_id]
-
-        markdown = "# Uncategorized Transactions\n\n"
-        if not uncategorized:
-            return markdown + "_No uncategorized transactions found._"
-
-        headers = ["ID", "Date", "Account", "Amount", "Payee", "Memo"]
-        align = ["left", "left", "right", "left", "left", "left"]
-        rows = []
-
-        for txn in uncategorized:
-            amount_dollars = float(txn.amount) / 1000
-            amount_str = f"${abs(amount_dollars):,.2f}"
-            if amount_dollars < 0:
-                amount_str = f"-{amount_str}"
-            rows.append(
-                [
-                    txn.id,
-                    txn.var_date.strftime("%Y-%m-%d"),
-                    txn.account_name,  # type: ignore
-                    amount_str,
-                    txn.payee_name or "N/A",
-                    txn.memo or "",
-                ]
-            )
-
-        markdown += _build_markdown_table(rows, headers, align)
-        return markdown
-
-
-@mcp.tool()
 async def get_transactions_needing_attention(
     budget_id: str,
-    include_uncategorized: bool = True,
-    include_unapproved: bool = True,
-    days_back: Optional[int] = 30,
+    filter_type: Annotated[
+        str,
+        Field(
+            description="Type of transactions to show. One of: 'uncategorized', 'unapproved', 'both'"
+        ),
+    ] = "both",
+    days_back: Annotated[
+        Optional[int], Field(description="Number of days to look back (default 30, None for all)")
+    ] = 30,
 ) -> str:
-    """List transactions that need attention (uncategorized or unapproved) in a YNAB budget.
+    """List transactions that need attention based on specified filter type in a YNAB budget.
 
     Args:
         budget_id: The YNAB budget ID
-        include_uncategorized: Include transactions missing categories
-        include_unapproved: Include transactions that aren't approved
+        filter_type: Type of transactions to show. One of: 'uncategorized', 'unapproved', 'both'
         days_back: Number of days to look back (default 30, None for all)
     """
     async with await get_ynab_client() as client:
         transactions_api = TransactionsApi(client)
         accounts_api = AccountsApi(client)
+
+        # Validate filter type
+        filter_type = filter_type.lower()
+        if filter_type not in ["uncategorized", "unapproved", "both"]:
+            return "Error: Invalid filter_type. Must be 'uncategorized', 'unapproved', or 'both'"
 
         # Get active accounts for reference
         accounts_response = accounts_api.get_accounts(budget_id)
@@ -540,19 +496,19 @@ async def get_transactions_needing_attention(
 
         for txn in response.data.transactions:
             if isinstance(txn, TransactionDetail):
-                needs_category = include_uncategorized and not txn.category_id
-                needs_approval = include_unapproved and not txn.approved
+                needs_category = filter_type in ["uncategorized", "both"] and not txn.category_id
+                needs_approval = filter_type in ["unapproved", "both"] and not txn.approved
+
                 if needs_category or needs_approval:
                     needs_attention.append(txn)
 
-        markdown = "# Transactions Needing Attention\n\n"
+        markdown = f"# Transactions Needing Attention ({filter_type.title()})\n\n"
         if not needs_attention:
             return markdown + "_No transactions need attention._"
 
         # Add filter information
         markdown += "**Filters Applied:**\n"
-        markdown += f"- Including uncategorized: {include_uncategorized}\n"
-        markdown += f"- Including unapproved: {include_unapproved}\n"
+        markdown += f"- Filter type: {filter_type}\n"
         if days_back:
             markdown += f"- Looking back {days_back} days\n"
         markdown += "\n"

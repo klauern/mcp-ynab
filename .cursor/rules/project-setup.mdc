@@ -10,3 +10,11 @@ This project is an MCP server [mcp.mdc](mdc:.cursor/rules/mcp.mdc) that implemen
 Dependencies and scaffolding are using the `uv` package tool, so all installs, etc., should be run with that in mind (uv add, sync, run, etc.).
 
 All commonly-run tasks need to be defined in [Taskfile.yml](mdc:Taskfile.yml).  If there isn't an appropriate task already defined, we should create one.
+
+## Tests
+
+We are using `pytest` exclusively, with any additional libraries being pytest extensions (coverage, async, etc.). [conftest.py](mdc:tests/conftest.py) should be consulted if we need to add any additional common fixtures or configurations.
+
+## Documentation
+
+The `./docs/` folder houses a couple very important contextual documentation around MCP servers.  Consult [mcp.mdc](mdc:.cursor/rules/mcp.mdc) for information.

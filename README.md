@@ -1,5 +1,7 @@
 # MCP YNAB Server
 
+[![smithery badge](https://smithery.ai/badge/@klauern/mcp-ynab)](https://smithery.ai/server/@klauern/mcp-ynab)
+
 An MCP server implementation that provides access to YNAB (You Need A Budget) functionality through the Model Context Protocol.
 
 ## Features
@@ -10,6 +12,15 @@ An MCP server implementation that provides access to YNAB (You Need A Budget) fu
 
 ## Installation
 
+### Installing via Smithery
+
+To install YNAB Integration Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@klauern/mcp-ynab):
+
+```bash
+npx -y @smithery/cli install @klauern/mcp-ynab --client claude
+```
+
+### Manual Installation
 ```bash
 uv pip install -e .
 ```

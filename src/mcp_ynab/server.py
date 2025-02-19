@@ -69,49 +69,49 @@ async def get_ynab_client() -> AsyncYNABClient:
     return AsyncYNABClient()
 
 
+def _get_empty_table(headers: List[str]) -> str:
+    """Create an empty markdown table with just headers."""
+    widths = [len(h) + 2 for h in headers]
+    header_line = "| " + " | ".join(f"{headers[i]:<{widths[i]}}" for i in range(len(headers))) + " |\n"
+    sep_line = "|" + "|".join("-" * (widths[i] + 2) for i in range(len(headers))) + "|\n"
+    return header_line + sep_line + "\n"
+
+
+def _get_column_widths(headers: List[str], rows: List[List[str]], col_count: int) -> List[int]:
+    """Calculate column widths based on content."""
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i in range(col_count):
+            widths[i] = max(widths[i], len(row[i]))
+    return [w + 2 for w in widths]
+
+
+def _format_table_line(items: List[str], widths: List[int], alignments: List[str]) -> str:
+    """Format a single line of the markdown table."""
+    line = "| "
+    for i, item in enumerate(items):
+        if alignments[i] == "right":
+            line += f"{item:>{widths[i]}} | "
+        else:
+            line += f"{item:<{widths[i]}} | "
+    return line.rstrip() + "\n"
+
+
 def _build_markdown_table(
     rows: List[List[str]], headers: List[str], alignments: Optional[List[str]] = None
 ) -> str:
     """Build a markdown table from rows and headers."""
     if not rows:
-        widths = [len(h) + 2 for h in headers]
-        header_line = (
-            "| " + " | ".join(f"{headers[i]:<{widths[i]}}" for i in range(len(headers))) + " |\n"
-        )
-        sep_line = "|" + "|".join("-" * (widths[i] + 2) for i in range(len(headers))) + "|\n"
-        return header_line + sep_line + "\n"
+        return _get_empty_table(headers)
 
-    if alignments is None:
-        alignments = ["left"] * len(headers)
-
+    alignments = alignments if alignments is not None else ["left"] * len(headers)
     col_count = len(headers)
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for i in range(col_count):
-            widths[i] = max(widths[i], len(row[i]))
-    widths = [w + 2 for w in widths]
+    widths = _get_column_widths(headers, rows, col_count)
 
-    header_line = "| "
-    sep_line = "|"
-    for i in range(col_count):
-        if alignments[i] == "right":
-            header_line += f"{headers[i]:>{widths[i]}} | "
-        else:
-            header_line += f"{headers[i]:<{widths[i]}} | "
-        sep_line += "-" * (widths[i] + 1) + "|"
-    header_line = header_line.rstrip() + "\n"
-    sep_line += "\n"
+    header_line = _format_table_line(headers, widths, alignments)
+    sep_line = "|" + "|".join("-" * (w + 1) for w in widths) + "|\n"
 
-    row_lines = ""
-    for row in rows:
-        line = "| "
-        for i in range(col_count):
-            if alignments[i] == "right":
-                line += f"{row[i]:>{widths[i]}} | "
-            else:
-                line += f"{row[i]:<{widths[i]}} | "
-        row_lines += line.rstrip() + "\n"
-
+    row_lines = "".join(_format_table_line(row, widths, alignments) for row in rows)
     return header_line + sep_line + row_lines
 
 
@@ -192,12 +192,12 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
 
             output["accounts"].append(group_data)
 
-    output["summary"]["net_worth"] = (
+    output["summary"]["net_worth_raw"] = (
         output["summary"]["total_assets"] - output["summary"]["total_liabilities"]
     )
     output["summary"]["total_assets"] = f"${output['summary']['total_assets']:,.2f}"
     output["summary"]["total_liabilities"] = f"${output['summary']['total_liabilities']:,.2f}"
-    output["summary"]["net_worth"] = f"${output['summary']['net_worth']:,.2f}"
+    output["summary"]["net_worth"] = f"${output['summary']['net_worth_raw']:,.2f}"
 
     return output
 
@@ -294,6 +294,18 @@ def get_cached_categories(budget_id: str) -> list[types.TextContent]:
 # 5. Public tool functions
 
 
+async def _find_category_id(client: ApiClient, budget_id: str, category_name: str) -> Optional[str]:
+    """Find a category ID by name."""
+    categories_api = CategoriesApi(client)
+    categories_response = categories_api.get_categories(budget_id)
+    categories = categories_response.data.category_groups
+    for group in categories:
+        for cat in group.categories:
+            if cat.name.lower() == category_name.lower():
+                return cat.id
+    return None
+
+
 @mcp.tool()
 async def create_transaction(
     account_id: str,
@@ -317,16 +329,7 @@ async def create_transaction(
 
         category_id = None
         if category_name:
-            categories_api = CategoriesApi(client)
-            categories_response = categories_api.get_categories(budget_id)
-            categories = categories_response.data.category_groups
-            for group in categories:
-                for cat in group.categories:
-                    if cat.name.lower() == category_name.lower():
-                        category_id = cat.id
-                        break
-                if category_id:
-                    break
+            category_id = await _find_category_id(client, budget_id, category_name)
 
         # Create transaction data
         transaction = NewTransaction(
@@ -448,6 +451,46 @@ async def get_transactions(budget_id: str, account_id: str) -> str:
         return markdown
 
 
+def _get_transaction_row(
+    txn: TransactionDetail, account_map: Dict[str, str], filter_type: str
+) -> List[str]:
+    """Format a transaction into a row for the markdown table."""
+    amount_dollars = float(txn.amount) / 1000
+    amount_str = f"${abs(amount_dollars):,.2f}"
+    if amount_dollars < 0:
+        amount_str = f"-{amount_str}"
+
+    status = []
+    if not txn.category_id:
+        status.append("Uncategorized")
+    if not txn.approved:
+        status.append("Unapproved")
+
+    return [
+        txn.id,
+        txn.var_date.strftime("%Y-%m-%d"),
+        account_map.get(txn.account_id, "Unknown"),
+        amount_str,
+        txn.payee_name or "N/A",
+        ", ".join(status),
+        txn.memo or "",
+    ]
+
+
+def _filter_transactions(
+    transactions: List[TransactionDetail], filter_type: str
+) -> List[TransactionDetail]:
+    """Filter transactions based on the filter type."""
+    needs_attention = []
+    for txn in transactions:
+        if isinstance(txn, TransactionDetail):
+            needs_category = filter_type in ["uncategorized", "both"] and not txn.category_id
+            needs_approval = filter_type in ["unapproved", "both"] and not txn.approved
+            if needs_category or needs_approval:
+                needs_attention.append(txn)
+    return needs_attention
+
+
 @mcp.tool()
 async def get_transactions_needing_attention(
     budget_id: str,
@@ -461,23 +504,15 @@ async def get_transactions_needing_attention(
         Optional[int], Field(description="Number of days to look back (default 30, None for all)")
     ] = 30,
 ) -> str:
-    """List transactions that need attention based on specified filter type in a YNAB budget.
+    """List transactions that need attention based on specified filter type in a YNAB budget."""
+    filter_type = filter_type.lower()
+    if filter_type not in ["uncategorized", "unapproved", "both"]:
+        return "Error: Invalid filter_type. Must be 'uncategorized', 'unapproved', or 'both'"
 
-    Args:
-        budget_id: The YNAB budget ID
-        filter_type: Type of transactions to show. One of: 'uncategorized', 'unapproved', 'both'
-        days_back: Number of days to look back (default 30, None for all)
-    """
     async with await get_ynab_client() as client:
         transactions_api = TransactionsApi(client)
         accounts_api = AccountsApi(client)
 
-        # Validate filter type
-        filter_type = filter_type.lower()
-        if filter_type not in ["uncategorized", "unapproved", "both"]:
-            return "Error: Invalid filter_type. Must be 'uncategorized', 'unapproved', or 'both'"
-
-        # Get active accounts for reference
         accounts_response = accounts_api.get_accounts(budget_id)
         account_map = {
             account.id: account.name
@@ -485,28 +520,14 @@ async def get_transactions_needing_attention(
             if not account.closed and not account.deleted
         }
 
-        # Calculate since_date if days_back is specified
-        since_date = None
-        if days_back is not None:
-            since_date = (datetime.now() - timedelta(days=days_back)).date()
-
-        # Get transactions
+        since_date = (datetime.now() - timedelta(days=days_back)).date() if days_back else None
         response = transactions_api.get_transactions(budget_id, since_date=since_date)
-        needs_attention: List[TransactionDetail] = []
-
-        for txn in response.data.transactions:
-            if isinstance(txn, TransactionDetail):
-                needs_category = filter_type in ["uncategorized", "both"] and not txn.category_id
-                needs_approval = filter_type in ["unapproved", "both"] and not txn.approved
-
-                if needs_category or needs_approval:
-                    needs_attention.append(txn)
+        needs_attention = _filter_transactions(response.data.transactions, filter_type)
 
         markdown = f"# Transactions Needing Attention ({filter_type.title()})\n\n"
         if not needs_attention:
             return markdown + "_No transactions need attention._"
 
-        # Add filter information
         markdown += "**Filters Applied:**\n"
         markdown += f"- Filter type: {filter_type}\n"
         if days_back:
@@ -515,37 +536,33 @@ async def get_transactions_needing_attention(
 
         headers = ["ID", "Date", "Account", "Amount", "Payee", "Status", "Memo"]
         align = ["left", "left", "left", "right", "left", "left", "left"]
-        rows = []
-
-        for txn in needs_attention:
-            amount_dollars = float(txn.amount) / 1000
-            amount_str = f"${abs(amount_dollars):,.2f}"
-            if amount_dollars < 0:
-                amount_str = f"-{amount_str}"
-
-            status = []
-            if not txn.category_id:
-                status.append("Uncategorized")
-            if not txn.approved:
-                status.append("Unapproved")
-
-            rows.append(
-                [
-                    txn.id,
-                    txn.var_date.strftime("%Y-%m-%d"),
-                    account_map.get(txn.account_id, "Unknown"),
-                    amount_str,
-                    txn.payee_name or "N/A",
-                    ", ".join(status),
-                    txn.memo or "",
-                ]
-            )
+        rows = [_get_transaction_row(txn, account_map, filter_type) for txn in needs_attention]
 
         markdown += _build_markdown_table(rows, headers, align)
         return markdown
 
 
 @mcp.tool()
+def _find_transaction_by_id(
+    transactions: List[TransactionDetail], transaction_id: str, id_type: str
+) -> Optional[TransactionDetail]:
+    """Find a transaction by its ID and ID type."""
+    for txn in transactions:
+        if (
+            (id_type == "id" and txn.id == transaction_id)
+            or (id_type == "import_id" and txn.import_id == transaction_id)
+            or (
+                id_type == "transfer_transaction_id"
+                and txn.transfer_transaction_id == transaction_id
+            )
+            or (
+                id_type == "matched_transaction_id" and txn.matched_transaction_id == transaction_id
+            )
+        ):
+            return txn
+    return None
+
+
 async def categorize_transaction(
     budget_id: str,
     transaction_id: str,
@@ -567,38 +584,18 @@ async def categorize_transaction(
     async with await get_ynab_client() as client:
         transactions_api = TransactionsApi(client)
 
-        # First get all transactions and find the one matching our criteria
+        # Get since_date for import_id type
         since_date = None
         if id_type == "import_id" and ":" in transaction_id:
-            # For import_id we can extract the date to optimize the search
-            parts = transaction_id.split(":")
-            if len(parts) >= 3:
-                try:
-                    since_date = datetime.strptime(parts[2], "%Y-%m-%d").date()
-                except ValueError:
-                    pass
+            try:
+                since_date = datetime.strptime(transaction_id.split(":")[2], "%Y-%m-%d").date()
+            except (ValueError, IndexError):
+                pass
 
         response = transactions_api.get_transactions(budget_id, since_date=since_date)
-        target_transaction = None
-
-        for txn in response.data.transactions:
-            if id_type == "id" and txn.id == transaction_id:
-                target_transaction = txn
-                break
-            elif id_type == "import_id" and txn.import_id == transaction_id:
-                target_transaction = txn
-                break
-            elif (
-                id_type == "transfer_transaction_id"
-                and txn.transfer_transaction_id == transaction_id
-            ):
-                target_transaction = txn
-                break
-            elif (
-                id_type == "matched_transaction_id" and txn.matched_transaction_id == transaction_id
-            ):
-                target_transaction = txn
-                break
+        target_transaction = _find_transaction_by_id(
+            response.data.transactions, transaction_id, id_type
+        )
 
         if target_transaction:
             wrapper = PutTransactionWrapper(
@@ -610,12 +607,26 @@ async def categorize_transaction(
             )
             transactions_api.update_transaction(
                 budget_id=budget_id,
-                transaction_id=target_transaction.id,  # Always use the main ID for updates
+                transaction_id=target_transaction.id,
                 data=wrapper,
             )
             return f"Transaction {transaction_id} (type: {id_type}) categorized as {category_id}."
 
         return f"Transaction {transaction_id} (type: {id_type}) not found."
+
+
+def _process_category_data(category: Category | Dict[str, Any]) -> tuple[str, str, float, float]:
+    """Process category data and return tuple of (id, name, budgeted, activity)."""
+    if isinstance(category, Category):
+        return category.id, category.name, category.budgeted, category.activity
+    cat_dict = cast(Dict[str, Any], category)
+    return cat_dict["id"], cat_dict["name"], cat_dict["budgeted"], cat_dict["activity"]
+
+
+def _format_dollar_amount(amount: float) -> str:
+    """Format a dollar amount with proper sign and formatting."""
+    amount_str = f"${abs(amount):,.2f}"
+    return f"-{amount_str}" if amount < 0 else amount_str
 
 
 @mcp.tool()
@@ -627,6 +638,9 @@ async def get_categories(budget_id: str) -> str:
         groups = response.data.category_groups
 
         markdown = "# YNAB Categories\n\n"
+        headers = ["Category ID", "Category Name", "Budgeted", "Activity"]
+        align = ["left", "left", "right", "right"]
+
         for group in groups:
             if isinstance(group, CategoryGroupWithCategories):
                 categories_list = group.categories
@@ -640,40 +654,19 @@ async def get_categories(budget_id: str) -> str:
                 continue
 
             markdown += f"## {group_name}\n\n"
-
-            headers = ["Category ID", "Category Name", "Budgeted", "Activity"]
-            align = ["left", "left", "right", "right"]
             rows = []
 
             for category in categories_list:
-                if isinstance(category, Category):
-                    cat_id = category.id
-                    name = category.name
-                    budgeted = category.budgeted
-                    activity = category.activity
-                else:
-                    cat_dict = cast(Dict[str, Any], category.to_dict())
-                    cat_id = cat_dict["id"]
-                    name = cat_dict["name"]
-                    budgeted = cat_dict["budgeted"]
-                    activity = cat_dict["activity"]
-
+                cat_id, name, budgeted, activity = _process_category_data(category)
                 budgeted_dollars = float(budgeted) / 1000 if budgeted else 0
                 activity_dollars = float(activity) / 1000 if activity else 0
-
-                budget_str = f"${abs(budgeted_dollars):,.2f}"
-                if budgeted_dollars < 0:
-                    budget_str = f"-{budget_str}"
-                activity_str = f"${abs(activity_dollars):,.2f}"
-                if activity_dollars < 0:
-                    activity_str = f"-{activity_str}"
 
                 rows.append(
                     [
                         cat_id,
                         name,
-                        budget_str,
-                        activity_str,
+                        _format_dollar_amount(budgeted_dollars),
+                        _format_dollar_amount(activity_dollars),
                     ]
                 )
 

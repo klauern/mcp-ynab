@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 import signal
 import sys
 from typing import NoReturn

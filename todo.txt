@@ -1,0 +1,50 @@
+# MCP-YNAB Project To-Do List
+
+## Code Organization
+- [ ] Split server.py into smaller modules (client, resources, utils, tools)
+- [ ] Create proper package structure with submodules
+- [ ] Extract formatting utilities to a dedicated module
+- [ ] Move YNAB client code to a dedicated client module
+- [ ] Separate persistence logic from business logic
+
+## Performance Improvements
+- [ ] Implement proper caching with TTL for budget and category data
+- [ ] Add pagination support for transaction queries
+- [ ] Optimize category lookup by implementing indexed search
+- [ ] Implement batch operations for transaction updates
+- [ ] Reduce redundant API calls in tool implementations
+
+## Error Handling & Robustness
+- [ ] Implement consistent error handling pattern across all API calls
+- [ ] Add input validation for all tool parameters
+- [ ] Implement retry logic for API failures
+- [ ] Add proper error reporting and logging infrastructure
+- [ ] Handle rate limiting for YNAB API
+
+## Testing
+- [ ] Implement unit tests for all helper functions
+- [ ] Add integration tests with API simulation
+- [ ] Test edge cases and error conditions
+- [ ] Add test coverage for resource endpoints
+- [ ] Improve test fixtures and mocking patterns
+
+## Documentation
+- [ ] Add docstrings to all public functions and classes
+- [ ] Create API documentation for resources and tools
+- [ ] Document data models and field definitions
+- [ ] Add usage examples for common operations
+- [ ] Document environment setup and configuration options
+
+## Feature Enhancements
+- [ ] Add support for multiple budget switching
+- [ ] Implement transaction search functionality
+- [ ] Add budget adjustment capabilities
+- [ ] Implement transaction approval workflow
+- [ ] Add reporting and visualization features
+
+## Development Experience
+- [ ] Add development environment setup documentation
+- [ ] Implement pre-commit hooks for code quality checks
+- [ ] Set up CI/CD workflow for automated testing
+- [ ] Create a development quick start guide
+- [ ] Improve debugging support

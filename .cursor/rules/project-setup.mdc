@@ -1,6 +1,7 @@
 ---
 description: Understanding the project structure
 globs: pyproject.toml,**/*.py
+alwaysApply: false
 ---
 
 # Project structure
@@ -17,4 +18,4 @@ We are using `pytest` exclusively, with any additional libraries being pytest ex
 
 ## Documentation
 
-The `./docs/` folder houses a couple very important contextual documentation around MCP servers.  Consult [mcp.mdc](mdc:.cursor/rules/mcp.mdc) for information.
+The `./docs/` folder houses a couple very important contextual documentation around MCP servers.  Consult [mcp.mdc](mdc:.cursor/rules/mcp.mdc) for information.  Additional, detailed information can be found in [CLAUDE.md](mdc:CLAUDE.md) and [todo.txt](mdc:todo.txt).

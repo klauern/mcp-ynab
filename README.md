@@ -2,6 +2,8 @@
 
 An MCP server implementation that provides access to YNAB (You Need A Budget) functionality through the Model Context Protocol.
 
+<a href="https://glama.ai/mcp/servers/y3utoybhi7"><img width="380" height="200" src="https://glama.ai/mcp/servers/y3utoybhi7/badge" alt="YNAB Server MCP server" /></a>
+
 ## Features
 
 - View account balances and transactions

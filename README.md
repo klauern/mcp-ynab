@@ -97,32 +97,3 @@ task deps      # Synchronize dependencies
 ```
 
 See [Taskfile.yml](Taskfile.yml) for all available tasks.
-
-## Claude Code Skill
-
-This project includes a Claude Code skill for natural language interaction with YNAB transactions. The skill is located in `.claude/skills/ynab-transactions/` and provides:
-
-- **Transaction Management**: Review, categorize, and create transactions
-- **Spending Analysis**: Analyze spending patterns and budget performance
-- **Account Balances**: Check account balances and reconcile
-- **Workflow Automation**: Common workflows like daily review and weekly cleanup
-
-### Using the Skill
-
-When using Claude Code in this project, you can use natural language commands like:
-
-```
-"Show me my uncategorized transactions"
-"Categorize that Starbucks purchase as Dining Out"
-"How much did I spend on groceries this month?"
-"Add a $42 transaction to Amazon"
-```
-
-See `.claude/skills/ynab-transactions/README.md` for detailed documentation and examples.
-
-### Skill Documentation
-
-- [SKILL.md](.claude/skills/ynab-transactions/SKILL.md) - Main skill definition and workflows
-- [EXAMPLES.md](.claude/skills/ynab-transactions/EXAMPLES.md) - Usage examples
-- [WORKFLOWS.md](.claude/skills/ynab-transactions/WORKFLOWS.md) - Detailed workflow guides
-- [TROUBLESHOOTING.md](.claude/skills/ynab-transactions/TROUBLESHOOTING.md) - Common issues and solutions

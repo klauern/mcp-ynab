@@ -599,17 +599,35 @@ async def categorize_transaction(
             except (ValueError, IndexError):
                 pass
 
-        response = transactions_api.get_transactions(budget_id, since_date=since_date)
-        target_transaction = _find_transaction_by_id(
-            response.data.transactions, transaction_id, id_type
-        )
+        target_transaction: Optional[TransactionDetail] = None
+        if id_type == "id":
+            try:
+                single_response = transactions_api.get_transaction_by_id(
+                    budget_id=budget_id, transaction_id=transaction_id
+                )
+                target_transaction = single_response.data.transaction
+            except Exception:
+                target_transaction = None
+        else:
+            response = transactions_api.get_transactions(budget_id, since_date=since_date)
+            target_transaction = _find_transaction_by_id(
+                response.data.transactions, transaction_id, id_type
+            )
 
         if target_transaction:
             wrapper = PutTransactionWrapper(
                 transaction=ExistingTransaction(
                     account_id=target_transaction.account_id,
+                    var_date=target_transaction.var_date,
                     amount=target_transaction.amount,
+                    payee_id=target_transaction.payee_id,
+                    payee_name=target_transaction.payee_name,
                     category_id=category_id,
+                    memo=target_transaction.memo,
+                    cleared=target_transaction.cleared,
+                    approved=target_transaction.approved,
+                    flag_color=target_transaction.flag_color,
+                    subtransactions=target_transaction.subtransactions,
                 )
             )
             transactions_api.update_transaction(

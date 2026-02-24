@@ -1,9 +1,6 @@
 # SQLite databases
 *.db
 *.db?*
-*.db-journal
-*.db-wal
-*.db-shm
 
 # Daemon runtime files
 daemon.lock

@@ -60,8 +60,15 @@ Issues in Beads are:
 Try Beads in your own projects:
 
 ```bash
-# Install Beads
-curl -sSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+# Install Beads from pinned commit
+BEADS_COMMIT="3f439d5e60668b13e11bcc785ed6724e297dd463"
+BEADS_URL="https://raw.githubusercontent.com/steveyegge/beads/${BEADS_COMMIT}/scripts/install.sh"
+EXPECTED_SHA256="c72671a5c32a5e222e805983ec9b21449a3bfa1c197a28988d74d049d4bc2112"
+
+curl -fsSL "$BEADS_URL" -o /tmp/beads-install.sh
+echo "$EXPECTED_SHA256  /tmp/beads-install.sh" | shasum -a 256 -c -
+less /tmp/beads-install.sh
+bash /tmp/beads-install.sh
 
 # Initialize in your repo
 bd init

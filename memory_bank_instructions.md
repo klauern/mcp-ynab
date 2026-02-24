@@ -7,6 +7,7 @@ I MUST read ALL memory bank files at the start of EVERY task - this is not optio
 
 The Memory Bank consists of core files and optional context files, all in Markdown format. Files build upon each other in a clear hierarchy:
 
+```mermaid
 flowchart TD
     PB[projectbrief.md] --> PC[productContext.md]
     PB --> SP[systemPatterns.md]
@@ -17,6 +18,7 @@ flowchart TD
     TC --> AC
 
     AC --> P[progress.md]
+```
 
 ### Core Files (Required)
 1. `projectbrief.md`
@@ -63,6 +65,7 @@ flowchart TD
 ## Core Workflows
 
 ### Plan Mode
+```mermaid
 flowchart TD
     Start[Start] --> ReadFiles[Read Memory Bank]
     ReadFiles --> CheckFiles{Files Complete?}
@@ -73,6 +76,7 @@ flowchart TD
     CheckFiles -->|Yes| Verify[Verify Context]
     Verify --> Strategy[Develop Strategy]
     Strategy --> Present[Present Approach]
+```
 
 ### Act Mode
 flowchart TD
@@ -89,6 +93,7 @@ Memory Bank updates occur when:
 3. When user requests with **update memory bank** (MUST review ALL files)
 4. When context needs clarification
 
+```mermaid
 flowchart TD
     Start[Update Process]
 
@@ -102,6 +107,7 @@ flowchart TD
     end
 
     Start --> Process
+```
 
 Note: When triggered by **update memory bank**, I MUST review every memory bank file, even if some don't require updates.
 Focus particularly on activeContext.md and progress.md as they track current state.

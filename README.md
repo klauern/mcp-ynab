@@ -75,3 +75,13 @@ task test:integration
 # Coverage
 task coverage
 ```
+
+### Beads Merge Driver Setup
+
+This repo declares a custom merge strategy for `.beads/issues.jsonl` in `.gitattributes`.
+Register the merge driver locally so Git can apply it:
+
+```bash
+git config --local merge.beads.name "Beads JSONL merge driver"
+git config --local merge.beads.driver "bd merge %O %A %B"
+```

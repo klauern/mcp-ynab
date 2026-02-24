@@ -379,7 +379,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.20.0,<2.0.0" },
-    { name = "pydantic", specifier = ">=2.10.0" },
+    { name = "pydantic", specifier = ">=2.10.0,<3" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "ynab", specifier = ">=1.0.1" },
 ]

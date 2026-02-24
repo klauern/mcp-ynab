@@ -1,5 +1,11 @@
 ---
-description:
+description: Memory Bank workflow guidance for repository context files
 globs:
-alwaysApply: true
+alwaysApply: false
 ---
+
+Use repository memory-bank files (`projectbrief.md`, `productContext.md`, `systemPatterns.md`,
+`techContext.md`, `activeContext.md`, `progress.md`) as high-level context references.
+
+Only update these files when work materially changes project scope, architecture, tooling, or
+active roadmap state.

@@ -5,21 +5,15 @@ description = "MCP server for YNAB API integration"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "mcp[cli]>=0.5.0",
-  "httpx>=0.26.0",
-  "pydantic>=2.0.0",
+  "mcp[cli]>=1.20.0,<2.0.0",
+  "pydantic>=2.10.0",
   "ynab>=1.0.1",
   "python-dotenv>=1.0.0",
-  "xdg>=6.0.0",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-
-[tool.black]
-line-length = 100
-target-version = ["py312"]
 
 [project.scripts]
 mcp-ynab = "mcp_ynab:main"
@@ -33,7 +27,6 @@ dev = [
   "pytest>=8.3.4",
   "pytest-asyncio>=0.25.3",
   "pytest-cov>=6.0.0",
-  "black>=24.0.0",
   "ruff>=0.9.4",
   "mypy>=1.15.0",
 ]
@@ -46,3 +39,5 @@ markers = [
   "asyncio: mark tests as async tests",
 ]
 addopts = "-v -ra --strict-markers -m 'not integration'"
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"

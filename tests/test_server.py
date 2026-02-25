@@ -53,6 +53,10 @@ async def test_tools_include_annotations_for_read_only_and_mutating() -> None:
     tools = {tool.name: tool for tool in await server.mcp.list_tools()}
     assert tools["get_budgets"].annotations.readOnlyHint is True
     assert tools["create_transaction"].annotations.destructiveHint is True
+    assert tools["set_preferred_budget_id"].annotations.readOnlyHint is False
+    assert tools["set_preferred_budget_id"].annotations.idempotentHint is True
+    assert tools["cache_categories"].annotations.readOnlyHint is False
+    assert tools["cache_categories"].annotations.idempotentHint is True
 
 
 @pytest.mark.asyncio
@@ -96,6 +100,12 @@ def test_ynab_resources_can_use_custom_config_dir(tmp_path: Path) -> None:
 
     reloaded = server.YNABResources(config_dir=tmp_path)
     assert reloaded.get_preferred_budget_id() == "budget-123"
+
+
+def test_load_json_file_handles_invalid_json(tmp_path: Path) -> None:
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{invalid", encoding="utf-8")
+    assert server._load_json_file(corrupt) == {}
 
 
 @pytest.mark.asyncio
@@ -161,6 +171,31 @@ async def test_categorize_transaction_uses_direct_lookup_for_id(
     assert api.by_id_called is True
     assert api.scan_called is False
     assert api.updated is True
+
+
+@pytest.mark.asyncio
+async def test_categorize_transaction_reraises_non_404_api_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyApi:
+        def get_transaction_by_id(self, budget_id: str, transaction_id: str):
+            raise server.ApiException(status=500, reason="server error")
+
+    class DummyCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    async def fake_get_ynab_client():
+        return DummyCtx()
+
+    monkeypatch.setattr(server, "get_ynab_client", fake_get_ynab_client)
+    monkeypatch.setattr(server, "TransactionsApi", lambda client: DummyApi())
+
+    with pytest.raises(server.ApiException):
+        await server.categorize_transaction("budget-1", "tx-1", "cat-1", id_type="id")
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -22,9 +23,11 @@ from ynab.models.new_transaction import NewTransaction
 from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
 from ynab.models.put_transaction_wrapper import PutTransactionWrapper
 from ynab.models.transaction_detail import TransactionDetail
+from ynab.rest import ApiException
 
 # 1. Load environment variables
 load_dotenv(verbose=True)
+logger = logging.getLogger(__name__)
 
 # 3. Private helper functions
 
@@ -214,6 +217,9 @@ def _load_json_file(filename: str | Path) -> Dict[str, Any]:
             return json.load(f)
     except FileNotFoundError:
         return {}
+    except json.JSONDecodeError as exc:
+        logger.warning("Failed to decode JSON from %s: %s", filename, exc)
+        return {}
 
 
 def _save_json_file(filename: str | Path, data: Dict[str, Any]) -> None:
@@ -226,6 +232,9 @@ def _save_json_file(filename: str | Path, data: Dict[str, Any]) -> None:
 mcp = FastMCP("YNAB")
 READ_ONLY_TOOL = types.ToolAnnotations(readOnlyHint=True, idempotentHint=True)
 MUTATING_TOOL = types.ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+IDEMPOTENT_MUTATING_TOOL = types.ToolAnnotations(
+    readOnlyHint=False, idempotentHint=True, destructiveHint=False
+)
 
 
 # Define resources
@@ -606,8 +615,11 @@ async def categorize_transaction(
                     budget_id=budget_id, transaction_id=transaction_id
                 )
                 target_transaction = single_response.data.transaction
-            except Exception:
-                target_transaction = None
+            except ApiException as exc:
+                if exc.status == 404:
+                    target_transaction = None
+                else:
+                    raise
         else:
             response = transactions_api.get_transactions(budget_id, since_date=since_date)
             target_transaction = _find_transaction_by_id(
@@ -700,14 +712,14 @@ async def get_categories(budget_id: str) -> str:
         return markdown
 
 
-@mcp.tool(annotations=types.ToolAnnotations(idempotentHint=True))
+@mcp.tool(annotations=IDEMPOTENT_MUTATING_TOOL)
 async def set_preferred_budget_id(budget_id: str) -> str:
     """Set the preferred YNAB budget ID."""
     ynab_resources.set_preferred_budget_id(budget_id)
     return f"Preferred budget ID set to {budget_id}"
 
 
-@mcp.tool(annotations=types.ToolAnnotations(idempotentHint=True))
+@mcp.tool(annotations=IDEMPOTENT_MUTATING_TOOL)
 async def cache_categories(budget_id: str) -> str:
     """Cache all categories for a given YNAB budget ID."""
     async with await get_ynab_client() as client:

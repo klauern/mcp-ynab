@@ -6,8 +6,13 @@ import pytest
 from ynab.api.budgets_api import BudgetsApi
 
 
+@pytest.mark.integration
 def test_environment_variables():
-    """Test that required environment variables are set."""
+    """Test that required environment variables are set.
+
+    Marked `integration` because it inherently requires `YNAB_API_KEY`,
+    which is intentionally absent from default CI runs.
+    """
     assert "YNAB_API_KEY" in os.environ, "YNAB_API_KEY must be set in environment"
 
 

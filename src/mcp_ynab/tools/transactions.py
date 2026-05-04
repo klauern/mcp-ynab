@@ -260,56 +260,53 @@ async def categorize_transaction(
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
 
-        # Get since_date for import_id type
-        since_date = None
-        if id_type == "import_id" and ":" in transaction_id:
-            try:
-                since_date = datetime.strptime(transaction_id.split(":")[2], "%Y-%m-%d").date()
-            except (ValueError, IndexError):
-                pass
-
-        target_transaction: Optional[TransactionDetail] = None
+        # Resolve the canonical transaction id. The "id" path skips any
+        # fetch entirely so there's no GET-then-PUT race; alternate id types
+        # still require a scan to find the underlying transaction id, but
+        # we only ship `category_id` on the wire (PATCH semantics) so a
+        # concurrent edit to memo/cleared/flag elsewhere on the transaction
+        # is preserved.
+        resolved_id: Optional[str] = None
         if id_type == "id":
-            try:
-                single_response = transactions_api.get_transaction_by_id(
-                    budget_id=budget_id, transaction_id=transaction_id
-                )
-                target_transaction = single_response.data.transaction
-            except ApiException as exc:
-                if exc.status == 404:
-                    target_transaction = None
-                else:
-                    raise
+            resolved_id = transaction_id
         else:
+            since_date = None
+            if id_type == "import_id" and ":" in transaction_id:
+                try:
+                    since_date = datetime.strptime(
+                        transaction_id.split(":")[2], "%Y-%m-%d"
+                    ).date()
+                except (ValueError, IndexError):
+                    pass
             response = transactions_api.get_transactions(budget_id, since_date=since_date)
             target_transaction = _find_transaction_by_id(
                 response.data.transactions, transaction_id, id_type
             )
+            if target_transaction is not None:
+                resolved_id = target_transaction.id
 
-        if target_transaction:
-            wrapper = _s.PutTransactionWrapper(
-                transaction=_s.ExistingTransaction(
-                    account_id=target_transaction.account_id,
-                    var_date=target_transaction.var_date,
-                    amount=target_transaction.amount,
-                    payee_id=target_transaction.payee_id,
-                    payee_name=target_transaction.payee_name,
-                    category_id=category_id,
-                    memo=target_transaction.memo,
-                    cleared=target_transaction.cleared,
-                    approved=target_transaction.approved,
-                    flag_color=target_transaction.flag_color,
-                    subtransactions=target_transaction.subtransactions,
-                )
-            )
+        if resolved_id is None:
+            return f"Transaction {transaction_id} (type: {id_type}) not found."
+
+        # PATCH-only: ExistingTransaction's other fields default to None and
+        # the SDK's to_dict() uses exclude_none=True, so only category_id is
+        # serialized into the request body. This avoids clobbering concurrent
+        # edits to memo/cleared/flag_color/subtransactions in YNAB.
+        wrapper = _s.PutTransactionWrapper(
+            transaction=_s.ExistingTransaction(category_id=category_id)
+        )
+        try:
             transactions_api.update_transaction(
                 budget_id=budget_id,
-                transaction_id=target_transaction.id,
+                transaction_id=resolved_id,
                 data=wrapper,
             )
-            return f"Transaction {transaction_id} (type: {id_type}) categorized as {category_id}."
+        except ApiException as exc:
+            if exc.status == 404:
+                return f"Transaction {transaction_id} (type: {id_type}) not found."
+            raise
 
-        return f"Transaction {transaction_id} (type: {id_type}) not found."
+        return f"Transaction {transaction_id} (type: {id_type}) categorized as {category_id}."
 
 
 def _validate_assignment(entry: Any) -> Optional[str]:

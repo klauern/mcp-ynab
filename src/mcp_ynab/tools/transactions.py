@@ -391,3 +391,77 @@ async def bulk_categorize(
     markdown += f"**{updated_count} of {len(rows)} updated** (budget `{budget_id}`).\n\n"
     markdown += _build_markdown_table(rows, headers, align)
     return markdown
+
+
+def _validate_transaction_id(entry: Any) -> Optional[str]:
+    """Return an error message if the id is malformed, else None."""
+    if not isinstance(entry, str):
+        return "not a string"
+    if not entry:
+        return "empty string"
+    return None
+
+
+@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
+async def approve_transactions(
+    budget_id: str,
+    transaction_ids: Annotated[
+        List[str],
+        Field(
+            description=(
+                "List of transaction IDs to mark as approved. Each ID is set to "
+                "approved=True via a single bulk PATCH. Re-approving an already "
+                "approved transaction is a no-op."
+            )
+        ),
+    ],
+) -> str:
+    """Approve many transactions in one round-trip via the bulk PATCH endpoint.
+
+    Skips and reports malformed entries (non-string or empty) without aborting
+    the rest of the batch. The response table marks each input id as Approved,
+    Not found (server didn't acknowledge it), or Invalid (skipped client-side).
+    """
+    headers = ["Transaction ID", "Result"]
+    align = ["left", "left"]
+
+    if not transaction_ids:
+        return "# Approve Transactions\n\n_No transaction IDs provided._"
+
+    valid_ids: List[str] = []
+    invalid_rows: List[List[str]] = []
+    for entry in transaction_ids:
+        err = _validate_transaction_id(entry)
+        if err is None:
+            valid_ids.append(entry)
+        else:
+            invalid_rows.append(
+                [
+                    str(entry) if isinstance(entry, str) else "",
+                    f"Invalid ({err})",
+                ]
+            )
+
+    saved_ids: set[str] = set()
+    if valid_ids:
+        async with await _s.get_ynab_client() as client:
+            transactions_api = _s.TransactionsApi(client)
+            patch_payload = PatchTransactionsWrapper(
+                transactions=[
+                    SaveTransactionWithIdOrImportId(id=tid, approved=True) for tid in valid_ids
+                ]
+            )
+            response = transactions_api.update_transactions(budget_id, patch_payload)
+            saved_ids = set(response.data.transaction_ids or [])
+
+    rows: List[List[str]] = []
+    for tid in valid_ids:
+        result = "Approved" if tid in saved_ids else "Not found"
+        rows.append([tid, result])
+    rows.extend(invalid_rows)
+
+    approved_count = sum(1 for r in rows if r[1] == "Approved")
+    markdown = "# Approve Transactions\n\n"
+    markdown += f"**{approved_count} of {len(rows)} approved** (budget `{budget_id}`).\n\n"
+    markdown += _build_markdown_table(rows, headers, align)
+    return markdown

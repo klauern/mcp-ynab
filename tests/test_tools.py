@@ -877,6 +877,87 @@ async def test_approve_transactions_propagates_api_exception(
 
 
 # ---------------------------------------------------------------------------
+# update_transaction (single PATCH any field)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_sends_only_supplied_fields(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    captured: dict = {}
+
+    def fake_existing(**kwargs: object) -> dict:
+        captured.update(kwargs)
+        return kwargs  # type: ignore[return-value]
+
+    def fake_wrapper(transaction: object) -> object:
+        return SimpleNamespace(transaction=transaction)
+
+    server.ExistingTransaction = fake_existing  # type: ignore[assignment]
+    server.PutTransactionWrapper = fake_wrapper  # type: ignore[assignment]
+
+    result = await server.update_transaction("b-1", "t-1", memo="rent")
+
+    assert "Updated transaction `t-1`" in result
+    assert "Memo" in result
+    assert "rent" in result
+    assert captured == {"memo": "rent"}
+    mock_ynab_apis.transactions.update_transaction.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_converts_amount_dollars_to_milliunits(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    captured: dict = {}
+
+    def fake_existing(**kwargs: object) -> dict:
+        captured.update(kwargs)
+        return kwargs  # type: ignore[return-value]
+
+    server.ExistingTransaction = fake_existing  # type: ignore[assignment]
+    server.PutTransactionWrapper = lambda transaction: SimpleNamespace(transaction=transaction)  # type: ignore[assignment]
+
+    await server.update_transaction("b-1", "t-1", amount=-12.34)
+
+    assert captured == {"amount": -12340}
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_rejects_when_no_fields_supplied(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="at least one field"):
+        await server.update_transaction("b-1", "t-1")
+    mock_ynab_apis.transactions.update_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_rejects_invalid_flag_color(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="Invalid flag_color"):
+        await server.update_transaction("b-1", "t-1", flag_color="chartreuse")
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_rejects_invalid_cleared_value(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="Invalid cleared value"):
+        await server.update_transaction("b-1", "t-1", cleared="maybe")
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_rejects_invalid_txn_date(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="Invalid txn_date"):
+        await server.update_transaction("b-1", "t-1", txn_date="not-a-date")
+
+
+# ---------------------------------------------------------------------------
 # ynab://budgets resource (list_budgets_resource)
 # ---------------------------------------------------------------------------
 

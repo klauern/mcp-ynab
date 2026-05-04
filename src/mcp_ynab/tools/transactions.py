@@ -274,9 +274,7 @@ async def categorize_transaction(
             since_date = None
             if id_type == "import_id" and ":" in transaction_id:
                 try:
-                    since_date = datetime.strptime(
-                        transaction_id.split(":")[2], "%Y-%m-%d"
-                    ).date()
+                    since_date = datetime.strptime(transaction_id.split(":")[2], "%Y-%m-%d").date()
                 except (ValueError, IndexError):
                     pass
             response = transactions_api.get_transactions(budget_id, since_date=since_date)
@@ -480,9 +478,7 @@ async def update_transaction(
         Optional[float],
         Field(description="Amount in dollars; converted to milliunits internally."),
     ] = None,
-    txn_date: Annotated[
-        Optional[str], Field(description="ISO date YYYY-MM-DD")
-    ] = None,
+    txn_date: Annotated[Optional[str], Field(description="ISO date YYYY-MM-DD")] = None,
     flag_color: Annotated[
         Optional[str],
         Field(description="One of: red, orange, yellow, green, blue, purple"),
@@ -522,14 +518,11 @@ async def update_transaction(
         try:
             supplied["var_date"] = datetime.strptime(txn_date, "%Y-%m-%d").date()
         except ValueError as exc:
-            raise ValueError(
-                f"Invalid txn_date {txn_date!r}; expected ISO YYYY-MM-DD."
-            ) from exc
+            raise ValueError(f"Invalid txn_date {txn_date!r}; expected ISO YYYY-MM-DD.") from exc
     if flag_color is not None:
         if flag_color.lower() not in _VALID_FLAG_COLORS:
             raise ValueError(
-                f"Invalid flag_color {flag_color!r}; must be one of "
-                f"{sorted(_VALID_FLAG_COLORS)}."
+                f"Invalid flag_color {flag_color!r}; must be one of {sorted(_VALID_FLAG_COLORS)}."
             )
         supplied["flag_color"] = flag_color.lower()
     if cleared is not None:
@@ -553,9 +546,7 @@ async def update_transaction(
 
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
-        wrapper = _s.PutTransactionWrapper(
-            transaction=_s.ExistingTransaction(**supplied)
-        )
+        wrapper = _s.PutTransactionWrapper(transaction=_s.ExistingTransaction(**supplied))
         transactions_api.update_transaction(
             budget_id=budget_id,
             transaction_id=transaction_id,

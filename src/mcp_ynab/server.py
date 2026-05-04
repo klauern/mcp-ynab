@@ -114,10 +114,13 @@ from .tools.transactions import (  # noqa: E402, F401
     bulk_categorize,
     categorize_transaction,
     create_transaction,
+    delete_transaction,
     get_scheduled_transactions,
     get_transactions,
     get_transactions_by_category,
     get_transactions_needing_attention,
+    import_transactions,
+    split_transaction,
     update_transaction,
 )
 from .prompts import (  # noqa: E402, F401

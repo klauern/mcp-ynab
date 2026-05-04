@@ -780,3 +780,172 @@ async def test_bulk_categorize_propagates_api_exception(
 
     with pytest.raises(ApiException):
         await server.bulk_categorize("b-1", [{"transaction_id": "t-1", "category_id": "c-1"}])
+
+
+# ---------------------------------------------------------------------------
+# ynab://budgets resource (list_budgets_resource)
+# ---------------------------------------------------------------------------
+
+
+def _budget_resource_mock(
+    budget_id: str,
+    name: str,
+    *,
+    last_modified: datetime | None = None,
+    iso_code: str = "USD",
+    deleted: bool = False,
+    closed: bool = False,
+) -> MagicMock:
+    """Build a budget mock with the attrs read by list_budgets_resource."""
+    budget = MagicMock()
+    budget.id = budget_id
+    budget.name = name
+    budget.last_modified_on = last_modified or datetime(2026, 5, 1, 12, 0, 0)
+    budget.currency_format = SimpleNamespace(iso_code=iso_code)
+    budget.deleted = deleted
+    budget.closed = closed
+    return budget
+
+
+@pytest.mark.asyncio
+async def test_list_budgets_resource_renders_markdown_table(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[
+            _budget_resource_mock("b-1", "Personal"),
+            _budget_resource_mock("b-2", "Business", iso_code="EUR"),
+        ]
+    )
+
+    result = await server.list_budgets_resource()
+
+    assert len(result) == 1
+    text = result[0].text
+    assert text.startswith("# YNAB Budgets")
+    assert "Personal" in text
+    assert "b-1" in text
+    assert "Business" in text
+    assert "USD" in text
+    assert "EUR" in text
+    # Markdown table separator
+    assert "|---" in text or "|--" in text
+
+
+@pytest.mark.asyncio
+async def test_list_budgets_resource_handles_empty_list(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(budgets=[])
+
+    result = await server.list_budgets_resource()
+
+    assert len(result) == 1
+    assert "_No budgets found._" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_list_budgets_resource_filters_deleted_budgets(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[
+            _budget_resource_mock("b-active", "Active"),
+            _budget_resource_mock("b-deleted", "Old", deleted=True),
+        ]
+    )
+
+    result = await server.list_budgets_resource()
+
+    text = result[0].text
+    assert "Active" in text
+    assert "b-active" in text
+    assert "Old" not in text
+    assert "b-deleted" not in text
+
+
+# ---------------------------------------------------------------------------
+# ynab://accounts/{budget_id} resource (list_accounts_resource)
+# ---------------------------------------------------------------------------
+
+
+def _account_resource_mock(
+    account_id: str,
+    name: str,
+    account_type: str,
+    balance_milliunits: int,
+    *,
+    closed: bool = False,
+    deleted: bool = False,
+) -> MagicMock:
+    """Build an account mock with the attrs read by list_accounts_resource."""
+    account = MagicMock()
+    account.id = account_id
+    account.name = name
+    account.type = account_type
+    account.balance = balance_milliunits
+    account.closed = closed
+    account.deleted = deleted
+    return account
+
+
+@pytest.mark.asyncio
+async def test_list_accounts_resource_renders_markdown_with_dollar_balances(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.accounts.get_accounts.return_value = _resp(
+        accounts=[
+            _account_resource_mock("a-1", "Main Checking", "checking", 5_000_000),
+            _account_resource_mock("a-2", "Visa", "creditCard", -2_500_000),
+        ]
+    )
+
+    result = await server.list_accounts_resource("b-1")
+
+    assert len(result) == 1
+    text = result[0].text
+    assert text.startswith("# YNAB Accounts (b-1)")
+    assert "Main Checking" in text
+    assert "checking" in text
+    assert "a-1" in text
+    assert "Visa" in text
+    assert "creditCard" in text
+    # Balances rendered in dollars (5_000_000 milliunits -> $5,000.00)
+    assert "$5,000.00" in text
+    assert "$2,500.00" in text  # negative formatted with parens by formatter
+    mock_ynab_apis.accounts.get_accounts.assert_called_once_with("b-1")
+
+
+@pytest.mark.asyncio
+async def test_list_accounts_resource_handles_empty_list(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.accounts.get_accounts.return_value = _resp(accounts=[])
+
+    result = await server.list_accounts_resource("b-1")
+
+    assert len(result) == 1
+    assert "_No accounts found._" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_list_accounts_resource_filters_closed_and_deleted(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.accounts.get_accounts.return_value = _resp(
+        accounts=[
+            _account_resource_mock("a-open", "Open Acct", "checking", 1_000_000),
+            _account_resource_mock("a-closed", "Closed Acct", "checking", 999_000, closed=True),
+            _account_resource_mock("a-del", "Deleted Acct", "savings", 1, deleted=True),
+        ]
+    )
+
+    result = await server.list_accounts_resource("b-1")
+
+    text = result[0].text
+    assert "Open Acct" in text
+    assert "a-open" in text
+    assert "Closed Acct" not in text
+    assert "a-closed" not in text
+    assert "Deleted Acct" not in text
+    assert "a-del" not in text

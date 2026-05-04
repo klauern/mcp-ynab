@@ -13,7 +13,9 @@ from typing import Annotated, Any, Dict, List, Optional
 from pydantic import Field
 from ynab.api_client import ApiClient
 from ynab.models.new_transaction import NewTransaction
+from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
 from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
+from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 from ynab.models.transaction_detail import TransactionDetail
 from ynab.rest import ApiException
 
@@ -308,3 +310,84 @@ async def categorize_transaction(
             return f"Transaction {transaction_id} (type: {id_type}) categorized as {category_id}."
 
         return f"Transaction {transaction_id} (type: {id_type}) not found."
+
+
+def _validate_assignment(entry: Any) -> Optional[str]:
+    """Return an error message if the assignment is malformed, else None."""
+    if not isinstance(entry, dict):
+        return "entry is not a dict"
+    if not entry.get("transaction_id"):
+        return "missing transaction_id"
+    if not entry.get("category_id"):
+        return "missing category_id"
+    return None
+
+
+@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
+async def bulk_categorize(
+    budget_id: str,
+    assignments: Annotated[
+        List[Dict[str, str]],
+        Field(
+            description=(
+                "List of {transaction_id, category_id} dicts. Each entry assigns "
+                "the given category to the given transaction in a single bulk PATCH."
+            )
+        ),
+    ],
+) -> str:
+    """Categorize many transactions in one round-trip via the bulk PATCH endpoint.
+
+    Skips and reports malformed entries (missing keys) without aborting the
+    rest of the batch. The response table marks each input id as Updated,
+    Not found (server didn't acknowledge it), or Invalid (skipped client-side).
+    """
+    headers = ["Transaction ID", "Category ID", "Result"]
+    align = ["left", "left", "left"]
+
+    if not assignments:
+        return "# Bulk Categorize\n\n_No assignments provided._"
+
+    valid_entries: List[Dict[str, str]] = []
+    invalid_rows: List[List[str]] = []
+    for entry in assignments:
+        err = _validate_assignment(entry)
+        if err is None:
+            valid_entries.append(entry)
+        else:
+            invalid_rows.append(
+                [
+                    str(entry.get("transaction_id", "")) if isinstance(entry, dict) else "",
+                    str(entry.get("category_id", "")) if isinstance(entry, dict) else "",
+                    f"Invalid ({err})",
+                ]
+            )
+
+    saved_ids: set[str] = set()
+    if valid_entries:
+        async with await _s.get_ynab_client() as client:
+            transactions_api = _s.TransactionsApi(client)
+            patch_payload = PatchTransactionsWrapper(
+                transactions=[
+                    SaveTransactionWithIdOrImportId(
+                        id=entry["transaction_id"],
+                        category_id=entry["category_id"],
+                    )
+                    for entry in valid_entries
+                ]
+            )
+            response = transactions_api.update_transactions(budget_id, patch_payload)
+            saved_ids = set(response.data.transaction_ids or [])
+
+    rows: List[List[str]] = []
+    for entry in valid_entries:
+        txn_id = entry["transaction_id"]
+        result = "Updated" if txn_id in saved_ids else "Not found"
+        rows.append([txn_id, entry["category_id"], result])
+    rows.extend(invalid_rows)
+
+    updated_count = sum(1 for r in rows if r[2] == "Updated")
+    markdown = "# Bulk Categorize\n\n"
+    markdown += f"**{updated_count} of {len(rows)} updated** (budget `{budget_id}`).\n\n"
+    markdown += _build_markdown_table(rows, headers, align)
+    return markdown

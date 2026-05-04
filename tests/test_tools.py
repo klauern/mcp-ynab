@@ -676,3 +676,107 @@ async def test_create_transaction_returns_empty_dict_when_response_missing(
     )
 
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# bulk_categorize (idempotent mutating tool, mocked end-to-end)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_categorize_updates_all_when_server_acks_every_id(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.update_transactions.return_value = _resp(
+        transaction_ids=["t-1", "t-2", "t-3"]
+    )
+
+    assignments = [
+        {"transaction_id": "t-1", "category_id": "c-coffee"},
+        {"transaction_id": "t-2", "category_id": "c-coffee"},
+        {"transaction_id": "t-3", "category_id": "c-rent"},
+    ]
+    result = await server.bulk_categorize("b-1", assignments)
+
+    assert "# Bulk Categorize" in result
+    assert "**3 of 3 updated**" in result
+    assert "t-1" in result and "c-coffee" in result and "Updated" in result
+    mock_ynab_apis.transactions.update_transactions.assert_called_once()
+    call = mock_ynab_apis.transactions.update_transactions.call_args
+    assert call.args[0] == "b-1"
+    payload = call.args[1]
+    assert len(payload.transactions) == 3
+    assert {t.id for t in payload.transactions} == {"t-1", "t-2", "t-3"}
+    assert {t.category_id for t in payload.transactions} == {"c-coffee", "c-rent"}
+
+
+@pytest.mark.asyncio
+async def test_bulk_categorize_marks_unacked_ids_as_not_found(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.update_transactions.return_value = _resp(transaction_ids=["t-1"])
+
+    assignments = [
+        {"transaction_id": "t-1", "category_id": "c-1"},
+        {"transaction_id": "t-bad", "category_id": "c-1"},
+    ]
+    result = await server.bulk_categorize("b-1", assignments)
+
+    assert "**1 of 2 updated**" in result
+    assert "t-bad" in result
+    assert "Not found" in result
+
+
+@pytest.mark.asyncio
+async def test_bulk_categorize_short_circuits_on_empty_assignments(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    result = await server.bulk_categorize("b-1", [])
+
+    assert "_No assignments provided._" in result
+    mock_ynab_apis.transactions.update_transactions.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bulk_categorize_skips_invalid_entries_but_processes_valid_ones(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.update_transactions.return_value = _resp(transaction_ids=["t-good"])
+
+    assignments = [
+        {"transaction_id": "t-good", "category_id": "c-1"},
+        {"transaction_id": "t-no-category"},
+        {"category_id": "c-1"},
+    ]
+    result = await server.bulk_categorize("b-1", assignments)
+
+    assert "**1 of 3 updated**" in result
+    assert "Invalid (missing category_id)" in result
+    assert "Invalid (missing transaction_id)" in result
+    call = mock_ynab_apis.transactions.update_transactions.call_args
+    payload = call.args[1]
+    assert len(payload.transactions) == 1
+    assert payload.transactions[0].id == "t-good"
+
+
+@pytest.mark.asyncio
+async def test_bulk_categorize_does_not_call_api_when_only_invalid_entries(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    assignments = [{"category_id": "c-1"}, {"transaction_id": "t-1"}]
+    result = await server.bulk_categorize("b-1", assignments)
+
+    assert "**0 of 2 updated**" in result
+    mock_ynab_apis.transactions.update_transactions.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bulk_categorize_propagates_api_exception(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.update_transactions.side_effect = ApiException(
+        status=500, reason="Boom"
+    )
+
+    with pytest.raises(ApiException):
+        await server.bulk_categorize("b-1", [{"transaction_id": "t-1", "category_id": "c-1"}])

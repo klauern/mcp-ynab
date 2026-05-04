@@ -103,6 +103,7 @@ from .tools.transactions import (  # noqa: E402, F401
     _find_category_id,
     _find_transaction_by_id,
     _get_transaction_row,
+    bulk_categorize,
     categorize_transaction,
     create_transaction,
     get_transactions,

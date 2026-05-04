@@ -73,6 +73,7 @@ ynab_resources = YNABResources()
 # Trigger registration of all @mcp.tool and @mcp.resource decorators. These
 # imports must run after `mcp`, `ynab_resources`, and the SDK class names
 # are bound above so the submodules can resolve them via `server.<name>`.
+from . import prompts  # noqa: E402, F401
 from . import resources  # noqa: E402, F401
 from .tools import budgeting, transactions  # noqa: E402, F401
 
@@ -106,4 +107,12 @@ from .tools.transactions import (  # noqa: E402, F401
     create_transaction,
     get_transactions,
     get_transactions_needing_attention,
+)
+from .prompts import (  # noqa: E402, F401
+    categorize_recent,
+    fund_sinking_categories,
+    monthly_budget_check,
+    move_money_interactive,
+    spending_by_payee,
+    weekly_review,
 )

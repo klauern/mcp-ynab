@@ -1,0 +1,1 @@
+{"id":"int-478e9c02","kind":"field_change","created_at":"2026-05-04T03:21:53.766401Z","actor":"Nick Klauer","issue_id":"mcp-ynab-irw","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"27 unit tests added, 92% coverage on server.py, shared fixture established. Follow-up filed for dummy-class refactor in existing tests."}}

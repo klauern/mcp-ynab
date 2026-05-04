@@ -780,3 +780,97 @@ async def test_bulk_categorize_propagates_api_exception(
 
     with pytest.raises(ApiException):
         await server.bulk_categorize("b-1", [{"transaction_id": "t-1", "category_id": "c-1"}])
+
+
+# ---------------------------------------------------------------------------
+# approve_transactions (idempotent mutating tool, mocked end-to-end)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approve_transactions_marks_all_when_server_acks_every_id(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.update_transactions.return_value = _resp(
+        transaction_ids=["t-1", "t-2", "t-3"]
+    )
+
+    result = await server.approve_transactions("b-1", ["t-1", "t-2", "t-3"])
+
+    assert "# Approve Transactions" in result
+    assert "**3 of 3 approved**" in result
+    assert "t-1" in result and "Approved" in result
+    mock_ynab_apis.transactions.update_transactions.assert_called_once()
+    call = mock_ynab_apis.transactions.update_transactions.call_args
+    assert call.args[0] == "b-1"
+    payload = call.args[1]
+    assert len(payload.transactions) == 3
+    assert {t.id for t in payload.transactions} == {"t-1", "t-2", "t-3"}
+    assert all(t.approved is True for t in payload.transactions)
+
+
+@pytest.mark.asyncio
+async def test_approve_transactions_marks_unacked_ids_as_not_found(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.update_transactions.return_value = _resp(transaction_ids=["t-1"])
+
+    result = await server.approve_transactions("b-1", ["t-1", "t-bad"])
+
+    assert "**1 of 2 approved**" in result
+    assert "t-bad" in result
+    assert "Not found" in result
+
+
+@pytest.mark.asyncio
+async def test_approve_transactions_short_circuits_on_empty_list(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    result = await server.approve_transactions("b-1", [])
+
+    assert "_No transaction IDs provided._" in result
+    mock_ynab_apis.transactions.update_transactions.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_approve_transactions_skips_invalid_entries_but_processes_valid_ones(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.update_transactions.return_value = _resp(transaction_ids=["t-good"])
+
+    # Pass non-string and empty string entries; type: ignore to allow
+    # exercising the runtime validation path.
+    transaction_ids = ["t-good", "", 123]  # type: ignore[list-item]
+    result = await server.approve_transactions("b-1", transaction_ids)
+
+    assert "**1 of 3 approved**" in result
+    assert "Invalid (empty string)" in result
+    assert "Invalid (not a string)" in result
+    call = mock_ynab_apis.transactions.update_transactions.call_args
+    payload = call.args[1]
+    assert len(payload.transactions) == 1
+    assert payload.transactions[0].id == "t-good"
+    assert payload.transactions[0].approved is True
+
+
+@pytest.mark.asyncio
+async def test_approve_transactions_does_not_call_api_when_only_invalid_entries(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    transaction_ids = ["", 42]  # type: ignore[list-item]
+    result = await server.approve_transactions("b-1", transaction_ids)
+
+    assert "**0 of 2 approved**" in result
+    mock_ynab_apis.transactions.update_transactions.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_approve_transactions_propagates_api_exception(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.update_transactions.side_effect = ApiException(
+        status=500, reason="Boom"
+    )
+
+    with pytest.raises(ApiException):
+        await server.approve_transactions("b-1", ["t-1"])

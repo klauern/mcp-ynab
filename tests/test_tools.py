@@ -218,7 +218,9 @@ async def test_get_accounts_handles_empty_account_list(
 
 @pytest.mark.asyncio
 async def test_get_accounts_propagates_api_exception(mock_ynab_apis: SimpleNamespace) -> None:
-    mock_ynab_apis.accounts.get_accounts.side_effect = ApiException(status=401, reason="Unauthorized")
+    mock_ynab_apis.accounts.get_accounts.side_effect = ApiException(
+        status=401, reason="Unauthorized"
+    )
 
     with pytest.raises(ApiException):
         await server.get_accounts("b-1")
@@ -564,9 +566,7 @@ async def test_create_transaction_uses_preferred_budget_id_when_set(
 
     created_txn = MagicMock()
     created_txn.to_dict.return_value = {"id": "new-txn", "amount": -12_340}
-    mock_ynab_apis.transactions.create_transaction.return_value = _resp(
-        transaction=created_txn
-    )
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(transaction=created_txn)
 
     result = await server.create_transaction(
         account_id="acct-1",

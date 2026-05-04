@@ -1,87 +1,97 @@
-# MCP YNAB Server
+# mcp-ynab
 
-MCP server for You Need A Budget (YNAB), implemented with Python and FastMCP.
-
-## Requirements
-
-- Python 3.12+
-- A YNAB Personal Access Token (`YNAB_API_KEY`)
+A [Model Context Protocol](https://modelcontextprotocol.io) server for the
+[YNAB](https://www.ynab.com) (You Need A Budget) API. Lets MCP clients (Claude
+Desktop, Claude Code, custom agents) read your budgets, accounts, and
+transactions, and create or recategorize transactions through structured tools.
 
 ## Install
 
-```bash
-uv sync
-uv pip install -e .
-```
-
-## Configuration
-
-Set your YNAB token in one of the following ways:
-
-1. Environment variable: `YNAB_API_KEY=...`
-2. `.env` file in the repository root
-3. MCP client secret management
-
-Runtime cache/preferences are stored in:
-
-- `${XDG_CONFIG_HOME}/mcp-ynab` if `XDG_CONFIG_HOME` is set
-- `~/.config/mcp-ynab` otherwise
-
-Files:
-
-- `preferred_budget_id.json`
-- `budget_category_cache.json`
-
-## Run
+The project is managed with [uv](https://docs.astral.sh/uv/) and
+[Task](https://taskfile.dev/). All Python commands in this repo go through
+`uv run`.
 
 ```bash
-# Dev mode
-uv run mcp dev src/mcp_ynab/server.py
-
-# Or via task
-task dev
+uv sync                  # install dependencies
+task install             # install the mcp-ynab CLI into the venv
 ```
 
-## MCP Resources
+## Configure
 
-- `ynab://preferences/budget_id`
-- `ynab://categories/{budget_id}`
+Set your YNAB Personal Access Token in the environment (or in a `.env` file at
+the repo root):
 
-## MCP Tools
+```bash
+export YNAB_API_KEY=your-personal-access-token
+```
 
-- `create_transaction`
-- `get_account_balance`
-- `get_budgets`
-- `get_accounts`
-- `get_transactions`
-- `get_transactions_needing_attention`
-- `categorize_transaction`
-- `get_categories`
-- `set_preferred_budget_id`
-- `cache_categories`
+Get a token at <https://app.ynab.com/settings/developer>.
+
+## Run the server
+
+```bash
+mcp-ynab                 # production
+task dev                 # dev mode + MCP Inspector in the browser
+```
+
+## Tools and resources
+
+The server exposes the following over MCP:
+
+**Read-only tools**
+
+| Tool | Purpose |
+| ---- | ------- |
+| `get_budgets` | List all budgets in markdown |
+| `get_accounts` | List accounts in a budget, grouped by type with summary |
+| `get_account_balance` | Return a single account's current balance in dollars |
+| `get_transactions` | Recent transactions for an account; optional `since_date` |
+| `get_transactions_needing_attention` | Filter for uncategorized / unapproved transactions |
+| `get_categories` | All categories in a budget grouped by category group |
+
+**Mutating tools**
+
+| Tool | Purpose |
+| ---- | ------- |
+| `create_transaction` | Create a new transaction in YNAB |
+| `categorize_transaction` | Assign a category to an existing transaction |
+| `set_preferred_budget_id` | Cache a preferred budget ID for default-targeted tools |
+| `cache_categories` | Cache a budget's category list locally |
+
+**Resources**
+
+- `ynab://preferences/budget_id` — currently preferred budget ID
+- `ynab://categories/{budget_id}` — cached categories for a budget
 
 ## Development
 
 ```bash
-# Lint + format
-task fmt
-
-# Unit tests (default excludes integration)
-task test
-
-# Integration tests (requires real YNAB token)
-task test:integration
-
-# Coverage
-task coverage
+task fmt                 # ruff format + check --fix
+task lint                # ruff check + format --check (no auto-fix)
+task typecheck           # mypy
+task docstrings          # interrogate (fails under 80%)
+task test                # unit tests only (default; integration excluded)
+task coverage            # unit tests with coverage report
 ```
 
-### Beads Merge Driver Setup
+## Integration tests
 
-This repo declares a custom merge strategy for `.beads/issues.jsonl` in `.gitattributes`.
-Register the merge driver locally so Git can apply it:
+Integration tests are gated behind `pytest.mark.integration` and excluded from
+the default `task test` run. They make real calls to your YNAB account, so they
+require `YNAB_API_KEY`.
 
 ```bash
-git config --local merge.beads.name "Beads JSONL merge driver"
-git config --local merge.beads.driver "bd merge %O %A %B"
+YNAB_API_KEY=your-token task test:integration
 ```
+
+The default integration suite is **read-only**. Tests that mutate data
+(create_transaction, categorize_transaction) require an additional opt-in:
+
+```bash
+YNAB_API_KEY=your-token YNAB_INTEGRATION_ALLOW_WRITES=1 \
+  task test:integration
+```
+
+## License
+
+MIT

@@ -566,6 +566,66 @@ def test_resource_get_cached_categories_returns_empty_for_unknown_budget(
     assert server.get_cached_categories("unknown-budget") == []
 
 
+def test_resource_get_cached_categories_includes_group_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Cached entries with a group should render as 'name [group] (ID: id)'."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.cache_categories(
+        "b-1",
+        [
+            {"id": "c-1", "name": "Groceries", "category_group_name": "Immediate Obligations"},
+        ],
+    )
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    contents = server.get_cached_categories("b-1")
+
+    assert len(contents) == 1
+    assert contents[0].type == "text"
+    assert contents[0].text == "Groceries [Immediate Obligations] (ID: c-1)"
+
+
+def test_resource_get_cached_categories_falls_back_when_group_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Legacy cached entries without a group should fall back to the old format."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    # Simulate a legacy cache entry written without the `group` field by
+    # poking the internal store directly (cache_categories always writes the
+    # field, even if it's None).
+    isolated._category_cache["b-1"] = [{"id": "c-1", "name": "Groceries"}]
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    contents = server.get_cached_categories("b-1")
+
+    assert len(contents) == 1
+    assert contents[0].text == "Groceries (ID: c-1)"
+
+
+def test_resource_get_cached_categories_falls_back_when_group_is_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A cached entry with group=None should also use the legacy format."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.cache_categories(
+        "b-1",
+        [{"id": "c-1", "name": "Groceries"}],  # no category_group_name -> stored as None
+    )
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    contents = server.get_cached_categories("b-1")
+
+    assert len(contents) == 1
+    assert contents[0].text == "Groceries (ID: c-1)"
+
+
 # ---------------------------------------------------------------------------
 # cache_categories tool (idempotent mutating)
 # ---------------------------------------------------------------------------

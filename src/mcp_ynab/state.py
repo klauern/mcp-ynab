@@ -71,12 +71,17 @@ class YNABResources:
     def get_cached_categories(self, budget_id: str) -> list[types.TextContent]:
         """Get categories from the cache formatted for MCP resources."""
         cached_categories = self._category_cache.get(budget_id, [])
-        return [
-            types.TextContent(
-                type="text", text=f"{cat.get('name', 'Unnamed')} (ID: {cat.get('id', 'N/A')})"
-            )
-            for cat in cached_categories
-        ]
+        contents: list[types.TextContent] = []
+        for cat in cached_categories:
+            name = cat.get("name", "Unnamed")
+            cat_id = cat.get("id", "N/A")
+            group = cat.get("group")
+            if group:
+                text = f"{name} [{group}] (ID: {cat_id})"
+            else:
+                text = f"{name} (ID: {cat_id})"
+            contents.append(types.TextContent(type="text", text=text))
+        return contents
 
     def cache_categories(self, budget_id: str, categories: List[Dict[str, Any]]) -> None:
         """Cache categories for a budget ID."""

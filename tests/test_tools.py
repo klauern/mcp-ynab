@@ -1562,3 +1562,200 @@ async def test_get_transactions_by_category_returns_friendly_message_when_empty(
     result = await server.get_transactions_by_category("b-1", "cat-1")
 
     assert "_No transactions found for this category._" in result
+
+
+# ---------------------------------------------------------------------------
+# spending_by_category / spending_by_payee
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spending_by_category_aggregates_outflows_only(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transactions.return_value = _resp(
+        transactions=[
+            _txn_mock("t-1", amount_milliunits=-25_000, category_id="cat-A", category_name="Food"),
+            _txn_mock("t-2", amount_milliunits=-15_000, category_id="cat-A", category_name="Food"),
+            _txn_mock("t-3", amount_milliunits=-5_000, category_id="cat-B", category_name="Gas"),
+            _txn_mock("t-4", amount_milliunits=10_000, category_id="cat-A", category_name="Food"),
+        ]
+    )
+
+    result = await server.spending_by_category("b-1", period="this_month")
+
+    assert "# Spending by Category" in result
+    assert "Food" in result
+    assert "Gas" in result
+    assert "$40.00" in result, "Food: 25 + 15 = 40 (inflow excluded)"
+    assert "$5.00" in result, "Gas: 5"
+
+
+@pytest.mark.asyncio
+async def test_spending_by_category_top_n_caps_results(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transactions.return_value = _resp(
+        transactions=[
+            _txn_mock(
+                f"t-{i}",
+                amount_milliunits=-(1000 * (i + 1)),
+                category_id=f"cat-{i}",
+                category_name=f"Cat{i}",
+            )
+            for i in range(5)
+        ]
+    )
+
+    result = await server.spending_by_category("b-1", period="last_30d", top_n=2)
+
+    assert "Cat4" in result
+    assert "Cat3" in result
+    assert "Cat0" not in result
+
+
+@pytest.mark.asyncio
+async def test_spending_by_category_empty_returns_friendly_message(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transactions.return_value = _resp(transactions=[])
+
+    result = await server.spending_by_category("b-1", period="ytd")
+
+    assert "_No outflow transactions in the selected period._" in result
+
+
+@pytest.mark.asyncio
+async def test_spending_by_category_passes_since_date(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transactions.return_value = _resp(transactions=[])
+
+    await server.spending_by_category("b-1", period="this_month")
+
+    call = mock_ynab_apis.transactions.get_transactions.call_args
+    expected_since = date.today().replace(day=1)
+    assert call.kwargs["since_date"] == expected_since
+
+
+@pytest.mark.asyncio
+async def test_spending_by_category_last_month_enforces_until_date(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    today = date.today()
+    first_of_this_month = today.replace(day=1)
+    last_month_end = first_of_this_month - timedelta(days=1)
+    in_last_month = last_month_end
+    in_this_month = first_of_this_month
+
+    mock_ynab_apis.transactions.get_transactions.return_value = _resp(
+        transactions=[
+            _txn_mock(
+                "t-old",
+                amount_milliunits=-10_000,
+                category_id="cat-A",
+                category_name="OldFood",
+                var_date=in_last_month,
+            ),
+            _txn_mock(
+                "t-new",
+                amount_milliunits=-99_000,
+                category_id="cat-B",
+                category_name="NewFood",
+                var_date=in_this_month,
+            ),
+        ]
+    )
+
+    result = await server.spending_by_category("b-1", period="last_month")
+
+    assert "OldFood" in result
+    assert "NewFood" not in result, "txns dated >= until_date excluded by client filter"
+
+
+@pytest.mark.asyncio
+async def test_spending_by_payee_groups_by_payee(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transactions.return_value = _resp(
+        transactions=[
+            SimpleNamespace(
+                id="t-1",
+                amount=-25_000,
+                account_id="acct-1",
+                payee_id="p-A",
+                payee_name="Cafe",
+                var_date=None,
+            ),
+            SimpleNamespace(
+                id="t-2",
+                amount=-12_500,
+                account_id="acct-1",
+                payee_id="p-A",
+                payee_name="Cafe",
+                var_date=None,
+            ),
+            SimpleNamespace(
+                id="t-3",
+                amount=-5_000,
+                account_id="acct-1",
+                payee_id="p-B",
+                payee_name="Gas Station",
+                var_date=None,
+            ),
+        ]
+    )
+
+    result = await server.spending_by_payee_tool("b-1", period="last_30d")
+
+    assert "# Spending by Payee" in result
+    assert "Cafe" in result
+    assert "Gas Station" in result
+    assert "$37.50" in result, "Cafe: 25 + 12.50 = 37.50"
+
+
+@pytest.mark.asyncio
+async def test_spending_by_payee_filters_by_account_id(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transactions.return_value = _resp(
+        transactions=[
+            SimpleNamespace(
+                id="t-1",
+                amount=-25_000,
+                account_id="acct-1",
+                payee_id="p-A",
+                payee_name="Cafe",
+                var_date=None,
+            ),
+            SimpleNamespace(
+                id="t-2",
+                amount=-99_000,
+                account_id="acct-2",
+                payee_id="p-A",
+                payee_name="Cafe",
+                var_date=None,
+            ),
+        ]
+    )
+
+    result = await server.spending_by_payee_tool("b-1", period="last_30d", account_id="acct-1")
+
+    assert "$25.00" in result
+    assert "$99.00" not in result, "txns on other accounts excluded by account_id filter"
+
+
+# ---------------------------------------------------------------------------
+# ping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ping_returns_user_id_on_success(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.users.get_user.return_value = _resp(user=SimpleNamespace(id="user-abc-123"))
+
+    result = await server.ping()
+
+    assert result == "ok (user_id=user-abc-123)"

@@ -7,8 +7,8 @@ through late attribute lookup. Pure formatting helpers are imported from
 `mcp_ynab.formatters` since tests do not patch them.
 """
 
-from datetime import date
-from typing import Any, Dict, List, cast
+from datetime import date, timedelta
+from typing import Any, Dict, List, Literal, Optional, cast
 
 from ynab.models.account import Account
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
@@ -374,3 +374,190 @@ async def merge_payees(
     else:
         markdown += "_Source payee retained (delete_source=False)._\n"
     return markdown
+
+
+# ---------------------------------------------------------------------------
+# Spending analysis helpers and tools
+# ---------------------------------------------------------------------------
+
+
+_Period = Literal["this_month", "last_month", "last_30d", "last_90d", "ytd"]
+
+
+def _resolve_period_range(period: _Period) -> tuple[date, Optional[date]]:
+    """Return ``(since_date, until_date)`` for a named period.
+
+    ``until_date`` is exclusive — `None` means "no upper bound" (run through
+    today). YNAB's ``get_transactions`` only takes ``since_date``; the upper
+    bound is enforced client-side after the fetch.
+    """
+    today = date.today()
+    if period == "this_month":
+        return today.replace(day=1), None
+    if period == "last_month":
+        first_of_this_month = today.replace(day=1)
+        last_month_end = first_of_this_month - timedelta(days=1)
+        first_of_last_month = last_month_end.replace(day=1)
+        return first_of_last_month, first_of_this_month
+    if period == "last_30d":
+        return today - timedelta(days=30), None
+    if period == "last_90d":
+        return today - timedelta(days=90), None
+    if period == "ytd":
+        return today.replace(month=1, day=1), None
+    raise ValueError(f"Unknown period: {period!r}")
+
+
+def _aggregate_spending(
+    transactions: List[Any],
+    *,
+    key_attr_id: str,
+    key_attr_name: str,
+    until_date: Optional[date],
+    account_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Group outflow transactions by a key, summing absolute spent.
+
+    Only transactions with ``amount < 0`` (outflows) contribute. Returns a
+    list of dicts with ``id``, ``name``, ``total`` (dollars), ``count``,
+    and ``avg`` (dollars), unsorted.
+    """
+    buckets: Dict[Optional[str], Dict[str, Any]] = {}
+    for txn in transactions:
+        amount = getattr(txn, "amount", 0) or 0
+        if amount >= 0:
+            continue
+        if account_id is not None and getattr(txn, "account_id", None) != account_id:
+            continue
+        if until_date is not None:
+            txn_date = getattr(txn, "var_date", None)
+            if txn_date is not None and txn_date >= until_date:
+                continue
+        bucket_id = getattr(txn, key_attr_id, None)
+        bucket_name = getattr(txn, key_attr_name, None) or "(uncategorized)"
+        bucket = buckets.setdefault(
+            bucket_id,
+            {"id": bucket_id, "name": bucket_name, "total_milliunits": 0, "count": 0},
+        )
+        bucket["total_milliunits"] += abs(int(amount))
+        bucket["count"] += 1
+
+    results: List[Dict[str, Any]] = []
+    for bucket in buckets.values():
+        count = bucket["count"]
+        total_dollars = bucket["total_milliunits"] / 1000.0
+        avg_dollars = total_dollars / count if count else 0.0
+        results.append(
+            {
+                "id": bucket["id"],
+                "name": bucket["name"],
+                "total": total_dollars,
+                "count": count,
+                "avg": avg_dollars,
+            }
+        )
+    return results
+
+
+def _render_spending_table(
+    rows: List[Dict[str, Any]],
+    *,
+    title: str,
+    key_label: str,
+    period: str,
+    top_n: int,
+) -> str:
+    """Render a spending-aggregation result list as a markdown table."""
+    rows_sorted = sorted(rows, key=lambda r: r["total"], reverse=True)[:top_n]
+    markdown = f"# {title}\n\n_Period: {period} (top {top_n})_\n\n"
+    if not rows_sorted:
+        return markdown + "_No outflow transactions in the selected period._"
+    headers = [key_label, "Total Spent", "Txn Count", "Avg"]
+    align = ["left", "right", "right", "right"]
+    table_rows = [
+        [
+            row["name"],
+            _format_dollar_amount(row["total"]),
+            str(row["count"]),
+            _format_dollar_amount(row["avg"]),
+        ]
+        for row in rows_sorted
+    ]
+    return markdown + _build_markdown_table(table_rows, headers, align)
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def spending_by_category(
+    budget_id: str,
+    period: _Period,
+    top_n: int = 20,
+) -> str:
+    """Aggregate outflow spending by category over a named period.
+
+    Sums absolute outflow amounts (txns with ``amount < 0``) per category,
+    counts transactions, computes per-txn average, sorts descending, and
+    returns the top-N as a markdown table.
+    """
+    since_date, until_date = _resolve_period_range(period)
+    async with await _s.get_ynab_client() as client:
+        transactions_api = _s.TransactionsApi(client)
+        response = transactions_api.get_transactions(budget_id, since_date=since_date)
+        rows = _aggregate_spending(
+            response.data.transactions,
+            key_attr_id="category_id",
+            key_attr_name="category_name",
+            until_date=until_date,
+        )
+    return _render_spending_table(
+        rows,
+        title="Spending by Category",
+        key_label="Category",
+        period=period,
+        top_n=top_n,
+    )
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def spending_by_payee(
+    budget_id: str,
+    period: _Period,
+    top_n: int = 20,
+    account_id: Optional[str] = None,
+) -> str:
+    """Aggregate outflow spending by payee over a named period.
+
+    Same shape as ``spending_by_category`` but groups by payee. When
+    ``account_id`` is provided, restricts the aggregation to transactions
+    on that account.
+    """
+    since_date, until_date = _resolve_period_range(period)
+    async with await _s.get_ynab_client() as client:
+        transactions_api = _s.TransactionsApi(client)
+        response = transactions_api.get_transactions(budget_id, since_date=since_date)
+        rows = _aggregate_spending(
+            response.data.transactions,
+            key_attr_id="payee_id",
+            key_attr_name="payee_name",
+            until_date=until_date,
+            account_id=account_id,
+        )
+    return _render_spending_table(
+        rows,
+        title="Spending by Payee",
+        key_label="Payee",
+        period=period,
+        top_n=top_n,
+    )
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def ping() -> str:
+    """Verify YNAB API auth by fetching the current user's id.
+
+    Useful for confirming that ``YNAB_API_KEY`` is set and valid without
+    touching budget data.
+    """
+    async with await _s.get_ynab_client() as client:
+        user_api = _s.UserApi(client)
+        response = user_api.get_user()
+        return f"ok (user_id={response.data.user.id})"

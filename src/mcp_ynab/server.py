@@ -111,6 +111,7 @@ from .tools.transactions import (  # noqa: E402, F401
     create_transaction,
     get_transactions,
     get_transactions_needing_attention,
+    update_transaction,
 )
 from .prompts import (  # noqa: E402, F401
     categorize_recent,

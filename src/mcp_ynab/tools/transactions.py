@@ -1,8 +1,9 @@
 """Transaction-domain MCP tools.
 
 `create_transaction`, `get_transactions`, `get_transactions_needing_attention`,
-and `categorize_transaction`. SDK API classes (`TransactionsApi`,
-`BudgetsApi`, `AccountsApi`, `CategoriesApi`), `ExistingTransaction`, and
+`categorize_transaction`, `bulk_categorize`, and `update_transaction`. SDK
+API classes (`TransactionsApi`, `BudgetsApi`, `AccountsApi`,
+`CategoriesApi`), `ExistingTransaction`, `PutTransactionWrapper`, and
 `ynab_resources` are looked up via the `server` module so test
 monkeypatches propagate.
 """
@@ -461,4 +462,128 @@ async def approve_transactions(
     markdown = "# Approve Transactions\n\n"
     markdown += f"**{approved_count} of {len(rows)} approved** (budget `{budget_id}`).\n\n"
     markdown += _build_markdown_table(rows, headers, align)
+    return markdown
+
+
+_VALID_FLAG_COLORS = {"red", "orange", "yellow", "green", "blue", "purple"}
+_VALID_CLEARED_VALUES = {"cleared", "uncleared", "reconciled"}
+
+
+@_s.mcp.tool(annotations=_s.MUTATING_TOOL)
+async def update_transaction(
+    budget_id: str,
+    transaction_id: str,
+    *,
+    memo: Optional[str] = None,
+    payee_name: Optional[str] = None,
+    amount: Annotated[
+        Optional[float],
+        Field(description="Amount in dollars; converted to milliunits internally."),
+    ] = None,
+    txn_date: Annotated[
+        Optional[str], Field(description="ISO date YYYY-MM-DD")
+    ] = None,
+    flag_color: Annotated[
+        Optional[str],
+        Field(description="One of: red, orange, yellow, green, blue, purple"),
+    ] = None,
+    cleared: Annotated[
+        Optional[str], Field(description="One of: cleared, uncleared, reconciled")
+    ] = None,
+    approved: Optional[bool] = None,
+    category_id: Optional[str] = None,
+) -> str:
+    """Partially update a single transaction (PATCH-style).
+
+    Only the fields you supply are sent to YNAB; unspecified fields are left
+    untouched. At least one mutable field must be provided.
+
+    Args:
+        budget_id: The YNAB budget ID.
+        transaction_id: The transaction ID to update.
+        memo: New memo text.
+        payee_name: New payee name.
+        amount: New amount in dollars (outflows are negative). Converted to
+            milliunits internally.
+        txn_date: New ISO date string (YYYY-MM-DD).
+        flag_color: New flag color (red/orange/yellow/green/blue/purple).
+        cleared: New cleared status (cleared/uncleared/reconciled).
+        approved: New approval state.
+        category_id: New category ID.
+    """
+    supplied: Dict[str, Any] = {}
+    if memo is not None:
+        supplied["memo"] = memo
+    if payee_name is not None:
+        supplied["payee_name"] = payee_name
+    if amount is not None:
+        supplied["amount"] = int(round(amount * 1000))
+    if txn_date is not None:
+        try:
+            supplied["var_date"] = datetime.strptime(txn_date, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid txn_date {txn_date!r}; expected ISO YYYY-MM-DD."
+            ) from exc
+    if flag_color is not None:
+        if flag_color.lower() not in _VALID_FLAG_COLORS:
+            raise ValueError(
+                f"Invalid flag_color {flag_color!r}; must be one of "
+                f"{sorted(_VALID_FLAG_COLORS)}."
+            )
+        supplied["flag_color"] = flag_color.lower()
+    if cleared is not None:
+        if cleared.lower() not in _VALID_CLEARED_VALUES:
+            raise ValueError(
+                f"Invalid cleared value {cleared!r}; must be one of "
+                f"{sorted(_VALID_CLEARED_VALUES)}."
+            )
+        supplied["cleared"] = cleared.lower()
+    if approved is not None:
+        supplied["approved"] = approved
+    if category_id is not None:
+        supplied["category_id"] = category_id
+
+    if not supplied:
+        raise ValueError(
+            "update_transaction requires at least one field to update "
+            "(memo, payee_name, amount, txn_date, flag_color, cleared, "
+            "approved, or category_id)."
+        )
+
+    async with await _s.get_ynab_client() as client:
+        transactions_api = _s.TransactionsApi(client)
+        wrapper = _s.PutTransactionWrapper(
+            transaction=_s.ExistingTransaction(**supplied)
+        )
+        transactions_api.update_transaction(
+            budget_id=budget_id,
+            transaction_id=transaction_id,
+            data=wrapper,
+        )
+
+    field_labels = {
+        "memo": "Memo",
+        "payee_name": "Payee",
+        "amount": "Amount",
+        "var_date": "Date",
+        "flag_color": "Flag",
+        "cleared": "Cleared",
+        "approved": "Approved",
+        "category_id": "Category ID",
+    }
+    rows: List[List[str]] = []
+    for key, value in supplied.items():
+        label = field_labels.get(key, key)
+        if key == "amount":
+            display = f"${value / 1000:,.2f}"
+        elif key == "var_date":
+            display = value.strftime("%Y-%m-%d")
+        else:
+            display = str(value)
+        rows.append([label, display])
+
+    markdown = "# Update Transaction\n\n"
+    markdown += f"Updated transaction `{transaction_id}` in budget `{budget_id}`.\n\n"
+    markdown += _build_markdown_table(rows, ["Field", "New Value"], ["left", "left"])
     return markdown

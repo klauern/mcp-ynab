@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -8,7 +9,6 @@ import mcp.types as types  # Import MCP types
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
-from xdg import XDG_CONFIG_HOME
 from ynab.api.accounts_api import AccountsApi
 from ynab.api.budgets_api import BudgetsApi
 from ynab.api.categories_api import CategoriesApi
@@ -23,29 +23,35 @@ from ynab.models.new_transaction import NewTransaction
 from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
 from ynab.models.put_transaction_wrapper import PutTransactionWrapper
 from ynab.models.transaction_detail import TransactionDetail
+from ynab.rest import ApiException
 
 # 1. Load environment variables
 load_dotenv(verbose=True)
-
-# 2. Globals / configuration
-ynab_api_key = os.environ.get("YNAB_API_KEY")
-
-# Set up XDG config directory
-CONFIG_DIR = Path(XDG_CONFIG_HOME) / "mcp-ynab"
-CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
-PREFERRED_BUDGET_ID_FILE = CONFIG_DIR / "preferred_budget_id.json"
-BUDGET_CATEGORY_CACHE_FILE = CONFIG_DIR / "budget_category_cache.json"
+logger = logging.getLogger(__name__)
 
 # 3. Private helper functions
 
 
 async def _get_client() -> ApiClient:
     """Get a configured YNAB API client. Reads API key from environment variables."""
+    ynab_api_key = os.getenv("YNAB_API_KEY")
     if not ynab_api_key:
         raise ValueError("YNAB_API_KEY not found in environment variables")
     configuration = Configuration(access_token=ynab_api_key)
     return ApiClient(configuration)
+
+
+def _resolve_config_dir(config_dir: Optional[Path] = None) -> Path:
+    """Resolve and create config directory."""
+    if config_dir is None:
+        xdg_config_home = os.getenv("XDG_CONFIG_HOME")
+        if xdg_config_home:
+            base_dir = Path(xdg_config_home)
+        else:
+            base_dir = Path.home() / ".config"
+        config_dir = base_dir / "mcp-ynab"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
 
 
 class AsyncYNABClient:
@@ -72,7 +78,9 @@ async def get_ynab_client() -> AsyncYNABClient:
 def _get_empty_table(headers: List[str]) -> str:
     """Create an empty markdown table with just headers."""
     widths = [len(h) + 2 for h in headers]
-    header_line = "| " + " | ".join(f"{headers[i]:<{widths[i]}}" for i in range(len(headers))) + " |\n"
+    header_line = (
+        "| " + " | ".join(f"{headers[i]:<{widths[i]}}" for i in range(len(headers))) + " |\n"
+    )
     sep_line = "|" + "|".join("-" * (widths[i] + 2) for i in range(len(headers))) + "|\n"
     return header_line + sep_line + "\n"
 
@@ -205,25 +213,36 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _load_json_file(filename: str | Path) -> Dict[str, Any]:
     """Load JSON data from a file."""
     try:
-        with open(filename, "r") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError as exc:
+        logger.warning("Failed to decode JSON from %s: %s", filename, exc)
         return {}
 
 
 def _save_json_file(filename: str | Path, data: Dict[str, Any]) -> None:
     """Save JSON data to a file."""
-    with open(filename, "w") as f:
+    with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 
 # 4. Create the MCP server instance
 mcp = FastMCP("YNAB")
+READ_ONLY_TOOL = types.ToolAnnotations(readOnlyHint=True, idempotentHint=True)
+MUTATING_TOOL = types.ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+IDEMPOTENT_MUTATING_TOOL = types.ToolAnnotations(
+    readOnlyHint=False, idempotentHint=True, destructiveHint=False
+)
 
 
 # Define resources
 class YNABResources:
-    def __init__(self):
+    def __init__(self, config_dir: Optional[Path] = None):
+        self._config_dir = _resolve_config_dir(config_dir)
+        self._preferred_budget_id_file = self._config_dir / "preferred_budget_id.json"
+        self._budget_category_cache_file = self._config_dir / "budget_category_cache.json"
         self._preferred_budget_id: Optional[str] = None
         self._category_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._load_data()
@@ -231,15 +250,12 @@ class YNABResources:
     def _load_data(self) -> None:
         """Load data from files."""
         try:
-            with open(PREFERRED_BUDGET_ID_FILE, "r") as f:
+            with open(self._preferred_budget_id_file, "r", encoding="utf-8") as f:
                 self._preferred_budget_id = f.read().strip() or None
         except FileNotFoundError:
             self._preferred_budget_id = None
 
-        try:
-            self._category_cache = _load_json_file(BUDGET_CATEGORY_CACHE_FILE)
-        except FileNotFoundError:
-            self._category_cache = {}
+        self._category_cache = _load_json_file(self._budget_category_cache_file)
 
     def get_preferred_budget_id(self) -> Optional[str]:
         """Get the preferred budget ID."""
@@ -248,7 +264,7 @@ class YNABResources:
     def set_preferred_budget_id(self, budget_id: str) -> None:
         """Set the preferred budget ID."""
         self._preferred_budget_id = budget_id
-        with open(PREFERRED_BUDGET_ID_FILE, "w") as f:
+        with open(self._preferred_budget_id_file, "w", encoding="utf-8") as f:
             f.write(budget_id)
 
     def get_cached_categories(self, budget_id: str) -> list[types.TextContent]:
@@ -271,7 +287,7 @@ class YNABResources:
             }
             for cat in categories
         ]
-        _save_json_file(BUDGET_CATEGORY_CACHE_FILE, self._category_cache)
+        _save_json_file(self._budget_category_cache_file, self._category_cache)
 
 
 # Instantiate the resources
@@ -306,7 +322,7 @@ async def _find_category_id(client: ApiClient, budget_id: str, category_name: st
     return None
 
 
-@mcp.tool()
+@mcp.tool(annotations=MUTATING_TOOL)
 async def create_transaction(
     account_id: str,
     amount: Annotated[float, Field(description="Amount in dollars")],
@@ -348,7 +364,7 @@ async def create_transaction(
         return {}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 async def get_account_balance(account_id: str) -> float:
     """Get the current balance of a YNAB account (in dollars)."""
     async with await get_ynab_client() as client:
@@ -361,7 +377,7 @@ async def get_account_balance(account_id: str) -> float:
         return float(response.data.account.balance) / 1000
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 async def get_budgets() -> str:
     """List all YNAB budgets in Markdown format."""
     async with await get_ynab_client() as client:
@@ -379,7 +395,7 @@ async def get_budgets() -> str:
         return markdown
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 async def get_accounts(budget_id: str) -> str:
     """List all YNAB accounts in a specific budget in Markdown format."""
     async with await get_ynab_client() as client:
@@ -414,7 +430,7 @@ async def get_accounts(budget_id: str) -> str:
         return markdown
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 async def get_transactions(budget_id: str, account_id: str) -> str:
     """Get recent transactions for a specific account in a specific budget."""
     async with await get_ynab_client() as client:
@@ -491,7 +507,7 @@ def _filter_transactions(
     return needs_attention
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 async def get_transactions_needing_attention(
     budget_id: str,
     filter_type: Annotated[
@@ -542,7 +558,6 @@ async def get_transactions_needing_attention(
         return markdown
 
 
-@mcp.tool()
 def _find_transaction_by_id(
     transactions: List[TransactionDetail], transaction_id: str, id_type: str
 ) -> Optional[TransactionDetail]:
@@ -563,6 +578,7 @@ def _find_transaction_by_id(
     return None
 
 
+@mcp.tool(annotations=MUTATING_TOOL)
 async def categorize_transaction(
     budget_id: str,
     transaction_id: str,
@@ -592,17 +608,38 @@ async def categorize_transaction(
             except (ValueError, IndexError):
                 pass
 
-        response = transactions_api.get_transactions(budget_id, since_date=since_date)
-        target_transaction = _find_transaction_by_id(
-            response.data.transactions, transaction_id, id_type
-        )
+        target_transaction: Optional[TransactionDetail] = None
+        if id_type == "id":
+            try:
+                single_response = transactions_api.get_transaction_by_id(
+                    budget_id=budget_id, transaction_id=transaction_id
+                )
+                target_transaction = single_response.data.transaction
+            except ApiException as exc:
+                if exc.status == 404:
+                    target_transaction = None
+                else:
+                    raise
+        else:
+            response = transactions_api.get_transactions(budget_id, since_date=since_date)
+            target_transaction = _find_transaction_by_id(
+                response.data.transactions, transaction_id, id_type
+            )
 
         if target_transaction:
             wrapper = PutTransactionWrapper(
                 transaction=ExistingTransaction(
                     account_id=target_transaction.account_id,
+                    var_date=target_transaction.var_date,
                     amount=target_transaction.amount,
+                    payee_id=target_transaction.payee_id,
+                    payee_name=target_transaction.payee_name,
                     category_id=category_id,
+                    memo=target_transaction.memo,
+                    cleared=target_transaction.cleared,
+                    approved=target_transaction.approved,
+                    flag_color=target_transaction.flag_color,
+                    subtransactions=target_transaction.subtransactions,
                 )
             )
             transactions_api.update_transaction(
@@ -629,7 +666,7 @@ def _format_dollar_amount(amount: float) -> str:
     return f"-{amount_str}" if amount < 0 else amount_str
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY_TOOL)
 async def get_categories(budget_id: str) -> str:
     """List all transaction categories for a given YNAB budget in Markdown format."""
     async with await get_ynab_client() as client:
@@ -675,14 +712,14 @@ async def get_categories(budget_id: str) -> str:
         return markdown
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_MUTATING_TOOL)
 async def set_preferred_budget_id(budget_id: str) -> str:
     """Set the preferred YNAB budget ID."""
     ynab_resources.set_preferred_budget_id(budget_id)
     return f"Preferred budget ID set to {budget_id}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=IDEMPOTENT_MUTATING_TOOL)
 async def cache_categories(budget_id: str) -> str:
     """Cache all categories for a given YNAB budget ID."""
     async with await get_ynab_client() as client:

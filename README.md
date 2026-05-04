@@ -1,99 +1,87 @@
 # MCP YNAB Server
 
-An MCP server implementation that provides access to YNAB (You Need A Budget) functionality through the Model Context Protocol.
+MCP server for You Need A Budget (YNAB), implemented with Python and FastMCP.
 
-## Features
+## Requirements
 
-- View account balances and transactions
-- Create new transactions
-- Access YNAB data through standardized MCP resources
+- Python 3.12+
+- A YNAB Personal Access Token (`YNAB_API_KEY`)
 
-## Installation
+## Install
 
 ```bash
+uv sync
 uv pip install -e .
 ```
 
 ## Configuration
 
-The server requires a YNAB API key to function. You can obtain one from your [YNAB Developer Settings](https://app.ynab.com/settings/developer).
+Set your YNAB token in one of the following ways:
 
-The API key can be provided through:
+1. Environment variable: `YNAB_API_KEY=...`
+2. `.env` file in the repository root
+3. MCP client secret management
 
-1. Environment variable: `YNAB_API_KEY=your_api_key`
-2. MCP secret management system
-3. `.env` file in project root
+Runtime cache/preferences are stored in:
 
-## Usage
+- `${XDG_CONFIG_HOME}/mcp-ynab` if `XDG_CONFIG_HOME` is set
+- `~/.config/mcp-ynab` otherwise
 
-### Running the Server
+Files:
+
+- `preferred_budget_id.json`
+- `budget_category_cache.json`
+
+## Run
 
 ```bash
-# Development mode with hot reload and browser launch
+# Dev mode
+uv run mcp dev src/mcp_ynab/server.py
+
+# Or via task
 task dev
-
-# Production install for Claude Desktop, Goose, or any other MCP-supported environment
-task install
 ```
 
-### Available Resources
+## MCP Resources
 
-- `ynab://accounts` - List all YNAB accounts
-- `ynab://transactions/{account_id}` - Get recent transactions for a specific account
+- `ynab://preferences/budget_id`
+- `ynab://categories/{budget_id}`
 
-### Available Tools
+## MCP Tools
 
-- `create_transaction` - Create a new transaction
-- `get_account_balance` - Get the current balance of an account
-
-## Example Usage
-
-```python
-# Create a new transaction
-result = await create_transaction(
-    account_id="your_account_id",
-    amount=42.50,  # in dollars
-    payee_name="Coffee Shop",
-    category_name="Dining Out",
-    memo="Morning coffee"
-)
-
-# Get account balance
-balance = await get_account_balance("your_account_id")
-
-# List accounts
-accounts = await ctx.read_resource("ynab://accounts")
-
-# Get recent transactions
-transactions = await ctx.read_resource(f"ynab://transactions/{account_id}")
-```
+- `create_transaction`
+- `get_account_balance`
+- `get_budgets`
+- `get_accounts`
+- `get_transactions`
+- `get_transactions_needing_attention`
+- `categorize_transaction`
+- `get_categories`
+- `set_preferred_budget_id`
+- `cache_categories`
 
 ## Development
 
 ```bash
-# Install dependencies (uses uv)
-task deps
+# Lint + format
+task fmt
 
-# Run all tests including integration tests (you will need a YNAB API key for this)
-task test:all
+# Unit tests (default excludes integration)
+task test
 
-# Generate coverage report
+# Integration tests (requires real YNAB token)
+task test:integration
+
+# Coverage
 task coverage
-
-# Format and lint code
-task fmt  # Should add this to Taskfile
 ```
 
-## Project Tasks
+### Beads Merge Driver Setup
 
-This project uses a Taskfile for common operations. Key commands:
+This repo declares a custom merge strategy for `.beads/issues.jsonl` in `.gitattributes`.
+Register the merge driver locally so Git can apply it:
 
 ```bash
-task dev       # Start dev server with auto-reload
-task test      # Run unit tests
-task coverage  # Generate test coverage report
-task install   # Install production build
-task deps      # Synchronize dependencies
+git config --local merge.beads.name "Beads JSONL merge driver"
+git config --local merge.beads.driver "bd merge %O %A %B"
 ```
-
-See [Taskfile.yml](Taskfile.yml) for all available tasks.

@@ -71,3 +71,8 @@ tasks:
     desc: "Run mypy type checking"
     cmds:
       - uv run mypy src/mcp_ynab
+
+  docstrings:
+    desc: "Check docstring coverage (fails under 80%)"
+    cmds:
+      - uv run interrogate src/mcp_ynab

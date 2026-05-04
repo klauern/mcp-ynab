@@ -1,3 +1,9 @@
+"""mcp-ynab — Model Context Protocol server for the YNAB API.
+
+Exposes a CLI entry point (`mcp-ynab`) that runs the FastMCP server defined in
+`mcp_ynab.server`.
+"""
+
 import argparse
 import signal
 import sys

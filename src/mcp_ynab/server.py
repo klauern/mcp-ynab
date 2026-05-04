@@ -1,3 +1,10 @@
+"""FastMCP server exposing YNAB (You Need A Budget) tools and resources.
+
+Defines the `mcp` FastMCP instance, the YNAB API client wrapper, the file-backed
+`YNABResources` store for preferences and category cache, and all tool and
+resource handlers. Import `mcp` from this module to run or extend the server.
+"""
+
 import json
 import logging
 import os
@@ -55,16 +62,19 @@ def _resolve_config_dir(config_dir: Optional[Path] = None) -> Path:
 
 
 class AsyncYNABClient:
-    """Async context manager for YNAB API client."""
+    """Async context manager wrapping the synchronous YNAB ApiClient."""
 
     def __init__(self):
+        """Initialize with no underlying client; created on `__aenter__`."""
         self.client: Optional[ApiClient] = None
 
     async def __aenter__(self) -> ApiClient:
+        """Create and return the YNAB ApiClient."""
         self.client = await _get_client()
         return self.client
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """No-op exit — see class docstring; ApiClient has no cleanup."""
         # The underlying ynab.ApiClient.__exit__ is itself a no-op — the SDK
         # uses a shared urllib3 pool manager with no per-client cleanup. We
         # keep the async context manager so callers can use `async with` and
@@ -241,7 +251,10 @@ IDEMPOTENT_MUTATING_TOOL = types.ToolAnnotations(
 
 # Define resources
 class YNABResources:
+    """File-backed store for user preferences and the budget category cache."""
+
     def __init__(self, config_dir: Optional[Path] = None):
+        """Initialize and load any persisted state from `config_dir`."""
         self._config_dir = _resolve_config_dir(config_dir)
         self._preferred_budget_id_file = self._config_dir / "preferred_budget_id.json"
         self._budget_category_cache_file = self._config_dir / "budget_category_cache.json"

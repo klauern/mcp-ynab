@@ -12,6 +12,10 @@ from typing import Any, Dict, List, cast
 
 from ynab.models.account import Account
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
+from ynab.models.patch_payee_wrapper import PatchPayeeWrapper
+from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
+from ynab.models.save_payee import SavePayee
+from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 
 from .. import server as _s
 from ..formatters import (
@@ -269,3 +273,104 @@ async def move_money(
         f"**{getattr(src, 'name', from_category_id)}** → "
         f"**{getattr(dst, 'name', to_category_id)}** ({month})."
     )
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def get_payees(budget_id: str, include_deleted: bool = False) -> str:
+    """List payees for a YNAB budget in Markdown table form.
+
+    Args:
+        budget_id: The YNAB budget ID.
+        include_deleted: If False (default), payees with `deleted=True` are
+            filtered out. Set True to include tombstoned payees.
+    """
+    async with await _s.get_ynab_client() as client:
+        payees_api = _s.PayeesApi(client)
+        response = payees_api.get_payees(budget_id)
+        payees = response.data.payees
+
+        headers = ["ID", "Name", "Transfer Account ID"]
+        align = ["left", "left", "left"]
+        rows: List[List[str]] = []
+        for payee in payees:
+            if not include_deleted and getattr(payee, "deleted", False):
+                continue
+            rows.append(
+                [
+                    getattr(payee, "id", "") or "",
+                    getattr(payee, "name", "") or "",
+                    getattr(payee, "transfer_account_id", None) or "",
+                ]
+            )
+
+        markdown = "# YNAB Payees\n\n"
+        if not rows:
+            return markdown + "_No payees found._"
+        markdown += _build_markdown_table(rows, headers, align)
+        return markdown
+
+
+@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
+async def rename_payee(budget_id: str, payee_id: str, new_name: str) -> str:
+    """Rename a YNAB payee. Idempotent: re-renaming to the same name is a no-op
+    on the server side.
+    """
+    async with await _s.get_ynab_client() as client:
+        payees_api = _s.PayeesApi(client)
+        wrapper = PatchPayeeWrapper(payee=SavePayee(name=new_name))
+        payees_api.update_payee(budget_id, payee_id, wrapper)
+    return f"Payee `{payee_id}` renamed to **{new_name}** in budget `{budget_id}`."
+
+
+@_s.mcp.tool(annotations=_s.MUTATING_TOOL)
+async def merge_payees(
+    budget_id: str,
+    source_payee_id: str,
+    destination_payee_id: str,
+    delete_source: bool = False,
+) -> str:
+    """Move every transaction from `source_payee_id` to `destination_payee_id`.
+
+    Iterates the source payee's transactions and PATCHes their `payee_id` to
+    the destination via the bulk PATCH endpoint.
+
+    Args:
+        budget_id: The YNAB budget ID.
+        source_payee_id: Payee whose transactions will be reassigned.
+        destination_payee_id: Payee that the transactions will be reassigned to.
+        delete_source: No-op flag. YNAB has no source-payee delete endpoint, so
+            the source payee cannot be removed via the API and the flag is
+            documented but not acted upon. The flag is reported in the summary
+            for transparency.
+    """
+    moved_ids: List[str] = []
+    async with await _s.get_ynab_client() as client:
+        transactions_api = _s.TransactionsApi(client)
+        response = transactions_api.get_transactions_by_payee(budget_id, source_payee_id)
+        source_txns = response.data.transactions or []
+        txn_ids = [getattr(t, "id", None) for t in source_txns]
+        txn_ids = [tid for tid in txn_ids if tid]
+
+        if txn_ids:
+            patch_payload = PatchTransactionsWrapper(
+                transactions=[
+                    SaveTransactionWithIdOrImportId(id=tid, payee_id=destination_payee_id)
+                    for tid in txn_ids
+                ]
+            )
+            patch_response = transactions_api.update_transactions(budget_id, patch_payload)
+            moved_ids = list(patch_response.data.transaction_ids or [])
+
+    markdown = "# Merge Payees\n\n"
+    markdown += (
+        f"Moved **{len(moved_ids)}** transaction(s) from payee `{source_payee_id}` "
+        f"to payee `{destination_payee_id}` in budget `{budget_id}`.\n\n"
+    )
+    if delete_source:
+        markdown += (
+            "_Note: `delete_source=True` was requested, but YNAB does not expose "
+            "a payee-delete endpoint, so the source payee was **not** deleted._\n"
+        )
+    else:
+        markdown += "_Source payee retained (delete_source=False)._\n"
+    return markdown

@@ -9,7 +9,7 @@ monkeypatches propagate.
 """
 
 from datetime import date, datetime, timedelta
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import Field
 from ynab.api_client import ApiClient
@@ -172,7 +172,7 @@ def _filter_transactions(
 async def get_transactions_needing_attention(
     budget_id: str,
     filter_type: Annotated[
-        str,
+        Literal["uncategorized", "unapproved", "both"],
         Field(
             description="Type of transactions to show. One of: 'uncategorized', 'unapproved', 'both'"
         ),
@@ -182,10 +182,6 @@ async def get_transactions_needing_attention(
     ] = 30,
 ) -> str:
     """List transactions that need attention based on specified filter type in a YNAB budget."""
-    filter_type = filter_type.lower()
-    if filter_type not in ["uncategorized", "unapproved", "both"]:
-        return "Error: Invalid filter_type. Must be 'uncategorized', 'unapproved', or 'both'"
-
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
         accounts_api = _s.AccountsApi(client)
@@ -577,4 +573,95 @@ async def update_transaction(
     markdown = "# Update Transaction\n\n"
     markdown += f"Updated transaction `{transaction_id}` in budget `{budget_id}`.\n\n"
     markdown += _build_markdown_table(rows, ["Field", "New Value"], ["left", "left"])
+    return markdown
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def get_scheduled_transactions(
+    budget_id: str,
+    within_days: Annotated[
+        int,
+        Field(description="Only include scheduled transactions due within this many days."),
+    ] = 30,
+) -> str:
+    """List upcoming scheduled transactions for a YNAB budget.
+
+    Filters server-side results to only those whose `date_next` is on or
+    before today + `within_days`.
+    """
+    cutoff = date.today() + timedelta(days=within_days)
+
+    async with await _s.get_ynab_client() as client:
+        scheduled_api = _s.ScheduledTransactionsApi(client)
+        response = scheduled_api.get_scheduled_transactions(budget_id)
+        scheduled = list(response.data.scheduled_transactions or [])
+
+    upcoming = [
+        sched
+        for sched in scheduled
+        if not getattr(sched, "deleted", False)
+        and sched.date_next is not None
+        and sched.date_next <= cutoff
+    ]
+    upcoming.sort(key=lambda s: s.date_next)
+
+    markdown = "# Scheduled Transactions\n\n"
+    markdown += f"Showing scheduled transactions due on or before {cutoff.isoformat()}.\n\n"
+    if not upcoming:
+        return markdown + "_No upcoming scheduled transactions._\n"
+
+    headers = ["Date Next", "Frequency", "Account", "Payee", "Category", "Amount"]
+    align = ["left", "left", "left", "left", "left", "right"]
+    rows: List[List[str]] = []
+    for sched in upcoming:
+        amount_dollars = float(sched.amount) / 1000
+        amount_str = f"${abs(amount_dollars):,.2f}"
+        if amount_dollars < 0:
+            amount_str = f"-{amount_str}"
+        rows.append(
+            [
+                sched.date_next.strftime("%Y-%m-%d"),
+                str(sched.frequency) if sched.frequency is not None else "N/A",
+                sched.account_name or "N/A",
+                sched.payee_name or "N/A",
+                sched.category_name or "N/A",
+                amount_str,
+            ]
+        )
+
+    markdown += _build_markdown_table(rows, headers, align)
+    return markdown
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def get_transactions_by_category(
+    budget_id: str,
+    category_id: str,
+    since_date: Annotated[
+        Optional[str],
+        Field(description="ISO date (YYYY-MM-DD) to filter transactions since."),
+    ] = None,
+) -> str:
+    """List transactions assigned to a specific category in a YNAB budget."""
+    async with await _s.get_ynab_client() as client:
+        categories_api = _s.CategoriesApi(client)
+        accounts_api = _s.AccountsApi(client)
+
+        accounts_response = accounts_api.get_accounts(budget_id)
+        account_map = {account.id: account.name for account in accounts_response.data.accounts}
+
+        response = categories_api.get_transactions_by_category(
+            budget_id, category_id, since_date=since_date
+        )
+        transactions = list(response.data.transactions or [])
+
+    markdown = f"# Transactions for Category `{category_id}`\n\n"
+    if not transactions:
+        return markdown + "_No transactions found for this category._\n"
+
+    headers = ["ID", "Date", "Account", "Amount", "Payee", "Status", "Memo"]
+    align = ["left", "left", "left", "right", "left", "left", "left"]
+    rows = [_get_transaction_row(txn, account_map, "both") for txn in transactions]
+
+    markdown += _build_markdown_table(rows, headers, align)
     return markdown

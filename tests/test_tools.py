@@ -8,7 +8,7 @@ SDK objects.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -439,12 +439,19 @@ async def test_needs_attention_returns_friendly_message_when_nothing_to_show(
 
 
 @pytest.mark.asyncio
-async def test_needs_attention_rejects_invalid_filter_type(
+async def test_needs_attention_rejects_invalid_filter_type_via_mcp_layer(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    result = await server.get_transactions_needing_attention("b-1", filter_type="bogus")
+    """Pydantic-via-FastMCP rejects out-of-Literal values before the tool runs."""
+    from mcp.server.fastmcp.exceptions import ToolError
 
-    assert "Error: Invalid filter_type" in result
+    with pytest.raises(ToolError) as exc_info:
+        await server.mcp.call_tool(
+            "get_transactions_needing_attention",
+            {"budget_id": "b-1", "filter_type": "bogus"},
+        )
+
+    assert "filter_type" in str(exc_info.value)
     mock_ynab_apis.accounts.get_accounts.assert_not_called()
 
 
@@ -1124,3 +1131,163 @@ async def test_list_accounts_resource_filters_closed_and_deleted(
     assert "a-closed" not in text
     assert "Deleted Acct" not in text
     assert "a-del" not in text
+
+
+# ---------------------------------------------------------------------------
+# get_scheduled_transactions
+# ---------------------------------------------------------------------------
+
+
+def _scheduled_mock(
+    *,
+    date_next: date,
+    frequency: str = "monthly",
+    account_name: str = "Checking",
+    payee_name: str = "Landlord",
+    category_name: str = "Rent",
+    amount_milliunits: int = -1_500_000,
+    deleted: bool = False,
+) -> MagicMock:
+    sched = MagicMock()
+    sched.date_next = date_next
+    sched.frequency = frequency
+    sched.account_name = account_name
+    sched.payee_name = payee_name
+    sched.category_name = category_name
+    sched.amount = amount_milliunits
+    sched.deleted = deleted
+    return sched
+
+
+@pytest.mark.asyncio
+async def test_get_scheduled_transactions_filters_by_within_days(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    today = date.today()
+    mock_ynab_apis.scheduled_transactions.get_scheduled_transactions.return_value = _resp(
+        scheduled_transactions=[
+            _scheduled_mock(
+                date_next=today + timedelta(days=5),
+                payee_name="Soon",
+            ),
+            _scheduled_mock(
+                date_next=today + timedelta(days=60),
+                payee_name="Later",
+            ),
+            _scheduled_mock(
+                date_next=today + timedelta(days=2),
+                payee_name="DeletedSoon",
+                deleted=True,
+            ),
+        ]
+    )
+
+    result = await server.get_scheduled_transactions("b-1", within_days=30)
+
+    assert "# Scheduled Transactions" in result
+    assert "Soon" in result
+    assert "Later" not in result, "scheduled txns past cutoff are excluded"
+    assert "DeletedSoon" not in result, "deleted scheduled txns are excluded"
+
+
+@pytest.mark.asyncio
+async def test_get_scheduled_transactions_returns_friendly_message_when_empty(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.scheduled_transactions.get_scheduled_transactions.return_value = _resp(
+        scheduled_transactions=[]
+    )
+
+    result = await server.get_scheduled_transactions("b-1")
+
+    assert "_No upcoming scheduled transactions._" in result
+
+
+@pytest.mark.asyncio
+async def test_get_scheduled_transactions_renders_amount_columns(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    today = date.today()
+    mock_ynab_apis.scheduled_transactions.get_scheduled_transactions.return_value = _resp(
+        scheduled_transactions=[
+            _scheduled_mock(
+                date_next=today + timedelta(days=1),
+                amount_milliunits=-1_500_000,
+                payee_name="Rent Co",
+                category_name="Housing",
+                account_name="Main",
+                frequency="monthly",
+            ),
+        ]
+    )
+
+    result = await server.get_scheduled_transactions("b-1", within_days=7)
+
+    assert "Rent Co" in result
+    assert "Housing" in result
+    assert "Main" in result
+    assert "monthly" in result
+    assert "$1,500.00" in result
+
+
+# ---------------------------------------------------------------------------
+# get_transactions_by_category
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_by_category_renders_table(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.accounts.get_accounts.return_value = _resp(
+        accounts=[SimpleNamespace(id="acct-1", name="Checking", closed=False, deleted=False)]
+    )
+    mock_ynab_apis.categories.get_transactions_by_category.return_value = _resp(
+        transactions=[
+            _txn_mock(
+                "t-1",
+                amount_milliunits=-25_000,
+                payee_name="Cafe",
+                category_id="cat-1",
+                approved=True,
+            ),
+            _txn_mock(
+                "t-2",
+                amount_milliunits=-15_500,
+                payee_name="Bookstore",
+                category_id="cat-1",
+                approved=True,
+            ),
+        ]
+    )
+
+    result = await server.get_transactions_by_category("b-1", "cat-1")
+
+    assert "# Transactions for Category `cat-1`" in result
+    assert "Cafe" in result
+    assert "Bookstore" in result
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_by_category_passes_since_date(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.accounts.get_accounts.return_value = _resp(accounts=[])
+    mock_ynab_apis.categories.get_transactions_by_category.return_value = _resp(transactions=[])
+
+    await server.get_transactions_by_category("b-1", "cat-1", since_date="2026-01-01")
+
+    call = mock_ynab_apis.categories.get_transactions_by_category.call_args
+    assert call.kwargs["since_date"] == "2026-01-01"
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_by_category_returns_friendly_message_when_empty(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.accounts.get_accounts.return_value = _resp(accounts=[])
+    mock_ynab_apis.categories.get_transactions_by_category.return_value = _resp(transactions=[])
+
+    result = await server.get_transactions_by_category("b-1", "cat-1")
+
+    assert "_No transactions found for this category._" in result

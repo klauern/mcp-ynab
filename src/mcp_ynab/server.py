@@ -28,6 +28,8 @@ from ynab.api.accounts_api import AccountsApi  # noqa: F401
 from ynab.api.budgets_api import BudgetsApi  # noqa: F401
 from ynab.api.categories_api import CategoriesApi  # noqa: F401
 from ynab.api.months_api import MonthsApi  # noqa: F401
+from ynab.api.payees_api import PayeesApi  # noqa: F401
+from ynab.api.scheduled_transactions_api import ScheduledTransactionsApi  # noqa: F401
 from ynab.api.transactions_api import TransactionsApi  # noqa: F401
 from ynab.models.existing_transaction import ExistingTransaction  # noqa: F401
 from ynab.models.patch_month_category_wrapper import PatchMonthCategoryWrapper  # noqa: F401
@@ -97,7 +99,10 @@ from .tools.budgeting import (  # noqa: E402, F401
     get_categories,
     get_category_for_month,
     get_month,
+    get_payees,
+    merge_payees,
     move_money,
+    rename_payee,
     set_preferred_budget_id,
 )
 from .tools.transactions import (  # noqa: E402, F401
@@ -109,7 +114,9 @@ from .tools.transactions import (  # noqa: E402, F401
     bulk_categorize,
     categorize_transaction,
     create_transaction,
+    get_scheduled_transactions,
     get_transactions,
+    get_transactions_by_category,
     get_transactions_needing_attention,
     update_transaction,
 )

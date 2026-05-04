@@ -16,6 +16,7 @@ from ynab.api_client import ApiClient
 from ynab.models.new_transaction import NewTransaction
 from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
 from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
+from ynab.models.save_sub_transaction import SaveSubTransaction
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 from ynab.models.transaction_detail import TransactionDetail
 from ynab.rest import ApiException
@@ -578,3 +579,127 @@ async def update_transaction(
     markdown += f"Updated transaction `{transaction_id}` in budget `{budget_id}`.\n\n"
     markdown += _build_markdown_table(rows, ["Field", "New Value"], ["left", "left"])
     return markdown
+
+
+@_s.mcp.tool(annotations=_s.MUTATING_TOOL)
+async def delete_transaction(budget_id: str, transaction_id: str) -> str:
+    """Delete a transaction from a YNAB budget.
+
+    Args:
+        budget_id: The YNAB budget ID.
+        transaction_id: The transaction ID to delete.
+
+    Returns:
+        A confirmation string. Raises ApiException on YNAB API errors (e.g.
+        404 if the transaction does not exist).
+    """
+    async with await _s.get_ynab_client() as client:
+        transactions_api = _s.TransactionsApi(client)
+        transactions_api.delete_transaction(budget_id, transaction_id)
+    return f"Transaction {transaction_id} deleted from budget {budget_id}."
+
+
+@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
+async def split_transaction(
+    budget_id: str,
+    transaction_id: str,
+    splits: Annotated[
+        List[Dict[str, Any]],
+        Field(
+            description=(
+                "List of split entries. Each entry is a dict with keys: "
+                "`amount` (float, in dollars; required), `category_id` "
+                "(optional str), `payee_name` (optional str), `memo` "
+                "(optional str). The sum of `amount` values (in milliunits) "
+                "must equal the parent transaction's amount in milliunits."
+            )
+        ),
+    ],
+) -> str:
+    """Convert a transaction into a split with the provided subtransactions.
+
+    Sums of split amounts (in milliunits) must equal the parent transaction
+    amount in milliunits. The parent transaction is patched with the new
+    `subtransactions` list, replacing any existing splits.
+
+    Args:
+        budget_id: The YNAB budget ID.
+        transaction_id: The parent transaction ID to convert into a split.
+        splits: List of split dicts; see `splits` parameter description.
+    """
+    if not splits:
+        raise ValueError("split_transaction requires at least one split entry.")
+
+    sub_transactions: List[SaveSubTransaction] = []
+    total_milliunits = 0
+    for idx, entry in enumerate(splits):
+        if not isinstance(entry, dict):
+            raise ValueError(f"splits[{idx}] is not a dict.")
+        if "amount" not in entry or entry["amount"] is None:
+            raise ValueError(f"splits[{idx}] is missing required 'amount' field.")
+        try:
+            amount_dollars = float(entry["amount"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"splits[{idx}] 'amount' must be a number (dollars); got {entry['amount']!r}."
+            ) from exc
+        amount_milliunits = int(round(amount_dollars * 1000))
+        total_milliunits += amount_milliunits
+        sub_transactions.append(
+            SaveSubTransaction(
+                amount=amount_milliunits,
+                category_id=entry.get("category_id"),
+                payee_name=entry.get("payee_name"),
+                memo=entry.get("memo"),
+            )
+        )
+
+    async with await _s.get_ynab_client() as client:
+        transactions_api = _s.TransactionsApi(client)
+
+        # Fetch parent transaction so we can validate the sum matches.
+        try:
+            parent_response = transactions_api.get_transaction_by_id(budget_id, transaction_id)
+        except ApiException as exc:
+            if exc.status == 404:
+                raise ValueError(
+                    f"Transaction {transaction_id} not found in budget {budget_id}."
+                ) from exc
+            raise
+        parent_amount = parent_response.data.transaction.amount
+        if total_milliunits != parent_amount:
+            raise ValueError(
+                f"Sum of split amounts ({total_milliunits} milliunits) does not equal "
+                f"parent transaction amount ({parent_amount} milliunits)."
+            )
+
+        wrapper = _s.PutTransactionWrapper(
+            transaction=_s.ExistingTransaction(subtransactions=sub_transactions)
+        )
+        transactions_api.update_transaction(
+            budget_id=budget_id,
+            transaction_id=transaction_id,
+            data=wrapper,
+        )
+
+    return (
+        f"Transaction {transaction_id} split into {len(sub_transactions)} subtransactions "
+        f"in budget {budget_id}."
+    )
+
+
+@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
+async def import_transactions(budget_id: str) -> List[str]:
+    """Trigger YNAB to import transactions for any linked accounts in a budget.
+
+    Args:
+        budget_id: The YNAB budget ID.
+
+    Returns:
+        A list of newly imported transaction IDs (may be empty if there is
+        nothing new to import).
+    """
+    async with await _s.get_ynab_client() as client:
+        transactions_api = _s.TransactionsApi(client)
+        response = transactions_api.import_transactions(budget_id)
+    return list(response.data.transaction_ids or [])

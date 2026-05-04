@@ -958,6 +958,217 @@ async def test_update_transaction_rejects_invalid_txn_date(
 
 
 # ---------------------------------------------------------------------------
+# delete_transaction (mutating tool)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_calls_sdk_and_returns_confirmation(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.delete_transaction.return_value = MagicMock()
+
+    result = await server.delete_transaction("b-1", "t-1")
+
+    assert "t-1" in result
+    assert "b-1" in result
+    assert "deleted" in result.lower()
+    mock_ynab_apis.transactions.delete_transaction.assert_called_once_with("b-1", "t-1")
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_propagates_api_exception(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.delete_transaction.side_effect = ApiException(
+        status=404, reason="Not Found"
+    )
+
+    with pytest.raises(ApiException):
+        await server.delete_transaction("b-1", "t-missing")
+
+
+# ---------------------------------------------------------------------------
+# split_transaction (idempotent mutating tool)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_split_transaction_patches_with_subtransactions_when_sum_matches(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    parent = SimpleNamespace(amount=-30_000)
+    mock_ynab_apis.transactions.get_transaction_by_id.return_value = _resp(transaction=parent)
+    mock_ynab_apis.transactions.update_transaction.return_value = MagicMock()
+
+    captured: dict = {}
+
+    def fake_existing(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    def fake_wrapper(transaction: object) -> object:
+        return SimpleNamespace(transaction=transaction)
+
+    server.ExistingTransaction = fake_existing  # type: ignore[assignment]
+    server.PutTransactionWrapper = fake_wrapper  # type: ignore[assignment]
+
+    splits = [
+        {"amount": -20.0, "category_id": "cat-food", "memo": "Groceries"},
+        {"amount": -10.0, "category_id": "cat-fun", "payee_name": "Sub-Payee"},
+    ]
+    result = await server.split_transaction("b-1", "t-1", splits)
+
+    assert "t-1" in result
+    assert "2 subtransactions" in result
+    assert "subtransactions" in captured
+    subs = captured["subtransactions"]
+    assert len(subs) == 2
+    assert [s.amount for s in subs] == [-20_000, -10_000]
+    assert subs[0].category_id == "cat-food"
+    assert subs[0].memo == "Groceries"
+    assert subs[1].payee_name == "Sub-Payee"
+
+    mock_ynab_apis.transactions.update_transaction.assert_called_once()
+    call = mock_ynab_apis.transactions.update_transaction.call_args
+    assert call.kwargs["budget_id"] == "b-1"
+    assert call.kwargs["transaction_id"] == "t-1"
+
+
+@pytest.mark.asyncio
+async def test_split_transaction_rejects_when_sum_does_not_match(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    parent = SimpleNamespace(amount=-30_000)
+    mock_ynab_apis.transactions.get_transaction_by_id.return_value = _resp(transaction=parent)
+
+    with pytest.raises(ValueError, match="does not equal parent transaction amount"):
+        await server.split_transaction(
+            "b-1",
+            "t-1",
+            [
+                {"amount": -20.0, "category_id": "cat-1"},
+                {"amount": -5.0, "category_id": "cat-2"},
+            ],
+        )
+
+    mock_ynab_apis.transactions.update_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_split_transaction_rejects_empty_splits(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="at least one split"):
+        await server.split_transaction("b-1", "t-1", [])
+
+    mock_ynab_apis.transactions.get_transaction_by_id.assert_not_called()
+    mock_ynab_apis.transactions.update_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_split_transaction_rejects_split_missing_amount(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="missing required 'amount'"):
+        await server.split_transaction(
+            "b-1",
+            "t-1",
+            [{"category_id": "cat-1"}],  # type: ignore[list-item]
+        )
+
+    mock_ynab_apis.transactions.get_transaction_by_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_split_transaction_raises_when_parent_not_found(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transaction_by_id.side_effect = ApiException(
+        status=404, reason="Not Found"
+    )
+
+    with pytest.raises(ValueError, match="not found"):
+        await server.split_transaction(
+            "b-1",
+            "t-missing",
+            [{"amount": -10.0, "category_id": "c-1"}],
+        )
+
+    mock_ynab_apis.transactions.update_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_split_transaction_propagates_non_404_api_exception(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transaction_by_id.side_effect = ApiException(
+        status=500, reason="Boom"
+    )
+
+    with pytest.raises(ApiException):
+        await server.split_transaction(
+            "b-1",
+            "t-1",
+            [{"amount": -10.0, "category_id": "c-1"}],
+        )
+
+
+# ---------------------------------------------------------------------------
+# import_transactions (idempotent mutating tool)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_import_transactions_returns_list_of_imported_ids(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.import_transactions.return_value = _resp(
+        transaction_ids=["imp-1", "imp-2"]
+    )
+
+    result = await server.import_transactions("b-1")
+
+    assert result == ["imp-1", "imp-2"]
+    mock_ynab_apis.transactions.import_transactions.assert_called_once_with("b-1")
+
+
+@pytest.mark.asyncio
+async def test_import_transactions_returns_empty_list_when_nothing_imported(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.import_transactions.return_value = _resp(transaction_ids=[])
+
+    result = await server.import_transactions("b-1")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_import_transactions_handles_none_transaction_ids(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    """Defensive: if SDK returns None for transaction_ids, treat as empty list."""
+    mock_ynab_apis.transactions.import_transactions.return_value = _resp(transaction_ids=None)
+
+    result = await server.import_transactions("b-1")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_import_transactions_propagates_api_exception(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.import_transactions.side_effect = ApiException(
+        status=500, reason="Boom"
+    )
+
+    with pytest.raises(ApiException):
+        await server.import_transactions("b-1")
+
+
+# ---------------------------------------------------------------------------
 # ynab://budgets resource (list_budgets_resource)
 # ---------------------------------------------------------------------------
 

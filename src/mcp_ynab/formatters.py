@@ -157,3 +157,83 @@ def _format_dollar_amount(amount: float) -> str:
     """Format a dollar amount with proper sign and formatting."""
     amount_str = f"${abs(amount):,.2f}"
     return f"-{amount_str}" if amount < 0 else amount_str
+
+
+def _render_month_markdown(month_detail: Any) -> str:
+    """Render a YNAB MonthDetail as markdown: header, totals, per-group table."""
+    month_value = getattr(month_detail, "month", None)
+    month_label = month_value.isoformat() if hasattr(month_value, "isoformat") else str(month_value)
+
+    rta = float(getattr(month_detail, "to_be_budgeted", 0) or 0) / 1000
+    income = float(getattr(month_detail, "income", 0) or 0) / 1000
+    budgeted = float(getattr(month_detail, "budgeted", 0) or 0) / 1000
+    activity = float(getattr(month_detail, "activity", 0) or 0) / 1000
+    age_of_money = getattr(month_detail, "age_of_money", None)
+
+    md = f"# YNAB Month: {month_label}\n\n"
+    md += "## Summary\n"
+    md += f"- **Ready to Assign:** {_format_dollar_amount(rta)}\n"
+    md += f"- **Age of Money:** {age_of_money if age_of_money is not None else 'N/A'} days\n"
+    md += f"- **Income:** {_format_dollar_amount(income)}\n"
+    md += f"- **Budgeted:** {_format_dollar_amount(budgeted)}\n"
+    md += f"- **Activity:** {_format_dollar_amount(activity)}\n\n"
+
+    categories: List[Any] = list(getattr(month_detail, "categories", []) or [])
+    grouped: Dict[str, List[Any]] = {}
+    for cat in categories:
+        if getattr(cat, "hidden", False) or getattr(cat, "deleted", False):
+            continue
+        group_name = getattr(cat, "category_group_name", None) or "Uncategorized"
+        grouped.setdefault(group_name, []).append(cat)
+
+    headers = ["Category ID", "Category Name", "Budgeted", "Activity", "Balance"]
+    align = ["left", "left", "right", "right", "right"]
+    for group_name in sorted(grouped):
+        md += f"## {group_name}\n\n"
+        rows: List[List[str]] = []
+        for cat in grouped[group_name]:
+            cat_id = getattr(cat, "id", "")
+            name = getattr(cat, "name", "")
+            b = float(getattr(cat, "budgeted", 0) or 0) / 1000
+            a = float(getattr(cat, "activity", 0) or 0) / 1000
+            bal = float(getattr(cat, "balance", 0) or 0) / 1000
+            rows.append(
+                [
+                    str(cat_id),
+                    str(name),
+                    _format_dollar_amount(b),
+                    _format_dollar_amount(a),
+                    _format_dollar_amount(bal),
+                ]
+            )
+        md += _build_markdown_table(rows, headers, align) + "\n"
+
+    return md
+
+
+def _render_month_category_markdown(category: Any) -> str:
+    """Render a single Category's month detail as markdown."""
+    name = getattr(category, "name", "Unknown")
+    cat_id = getattr(category, "id", "")
+    budgeted = float(getattr(category, "budgeted", 0) or 0) / 1000
+    activity = float(getattr(category, "activity", 0) or 0) / 1000
+    balance = float(getattr(category, "balance", 0) or 0) / 1000
+    goal_type = getattr(category, "goal_type", None)
+    goal_target = getattr(category, "goal_target", None)
+    goal_pct = getattr(category, "goal_percentage_complete", None)
+    note = getattr(category, "note", None)
+
+    md = f"# {name}\n\n"
+    md += f"- **ID:** {cat_id}\n"
+    md += f"- **Budgeted:** {_format_dollar_amount(budgeted)}\n"
+    md += f"- **Activity:** {_format_dollar_amount(activity)}\n"
+    md += f"- **Balance:** {_format_dollar_amount(balance)}\n"
+    if goal_type:
+        target = float(goal_target or 0) / 1000
+        md += f"- **Goal:** {goal_type} (target {_format_dollar_amount(target)}"
+        if goal_pct is not None:
+            md += f", {goal_pct}% complete"
+        md += ")\n"
+    if note:
+        md += f"\n**Note:** {note}\n"
+    return md

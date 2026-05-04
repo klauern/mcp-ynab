@@ -27,9 +27,12 @@ from mcp.server.fastmcp import FastMCP
 from ynab.api.accounts_api import AccountsApi  # noqa: F401
 from ynab.api.budgets_api import BudgetsApi  # noqa: F401
 from ynab.api.categories_api import CategoriesApi  # noqa: F401
+from ynab.api.months_api import MonthsApi  # noqa: F401
 from ynab.api.transactions_api import TransactionsApi  # noqa: F401
 from ynab.models.existing_transaction import ExistingTransaction  # noqa: F401
+from ynab.models.patch_month_category_wrapper import PatchMonthCategoryWrapper  # noqa: F401
 from ynab.models.put_transaction_wrapper import PutTransactionWrapper  # noqa: F401
+from ynab.models.save_month_category import SaveMonthCategory  # noqa: F401
 from ynab.rest import ApiException  # noqa: F401
 
 # Helpers re-exported so `mcp_ynab.server.<name>` keeps working for callers
@@ -78,14 +81,20 @@ from .tools import budgeting, transactions  # noqa: E402, F401
 # tools with `mcp`; these imports just bind the names on the server module.
 from .resources import (  # noqa: E402, F401
     get_cached_categories,
+    get_current_month_resource,
+    get_month_resource,
     get_preferred_budget_id,
 )
 from .tools.budgeting import (  # noqa: E402, F401
+    assign_money,
     cache_categories,
     get_account_balance,
     get_accounts,
     get_budgets,
     get_categories,
+    get_category_for_month,
+    get_month,
+    move_money,
     set_preferred_budget_id,
 )
 from .tools.transactions import (  # noqa: E402, F401

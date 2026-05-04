@@ -86,3 +86,31 @@ async def test_get_categories_renders_header(
     """
     result = await server.get_categories(integration_first_budget_id)
     assert "# YNAB Categories" in result
+
+
+@pytest.mark.asyncio
+async def test_get_month_renders_snapshot_for_latest_populated_month(
+    integration_first_budget_id: str,
+) -> None:
+    """Smoke-test MonthsApi binding against the live SDK.
+
+    Picks the most recent month present on the account rather than blindly
+    requesting "current": some test accounts trail the wall clock and would
+    404 on the current calendar month.
+    """
+    import os
+
+    from ynab.api.months_api import MonthsApi
+    from ynab.api_client import ApiClient
+    from ynab.configuration import Configuration
+
+    cfg = Configuration(access_token=os.environ["YNAB_API_KEY"])
+    with ApiClient(cfg) as raw_client:
+        months = MonthsApi(raw_client).get_budget_months(integration_first_budget_id).data.months
+    if not months:
+        pytest.skip("Budget has no month data")
+    latest_iso = months[0].month.isoformat()
+
+    result = await server.get_month(integration_first_budget_id, latest_iso)
+    assert "# YNAB Month:" in result
+    assert "Ready to Assign" in result

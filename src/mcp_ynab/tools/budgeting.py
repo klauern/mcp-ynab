@@ -7,6 +7,7 @@ through late attribute lookup. Pure formatting helpers are imported from
 `mcp_ynab.formatters` since tests do not patch them.
 """
 
+from datetime import date
 from typing import Any, Dict, List, cast
 
 from ynab.models.account import Account
@@ -18,7 +19,21 @@ from ..formatters import (
     _format_accounts_output,
     _format_dollar_amount,
     _process_category_data,
+    _render_month_category_markdown,
+    _render_month_markdown,
 )
+
+
+def _resolve_month(month: str) -> date:
+    """Resolve a month string into a `date` (first-of-month).
+
+    Accepts the literal ``"current"`` (UTC current month) or any ISO date
+    string YYYY-MM-DD. Resolving client-side avoids relying on the SDK's
+    Pydantic-strict `datetime.date` annotation accepting raw strings.
+    """
+    if month == "current":
+        return date.today().replace(day=1)
+    return date.fromisoformat(month)
 
 
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
@@ -154,3 +169,101 @@ async def cache_categories(budget_id: str) -> str:
 
         _s.ynab_resources.cache_categories(budget_id, [cat.to_dict() for cat in categories])
         return f"Categories cached for budget ID {budget_id}"
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def get_month(budget_id: str, month: str = "current") -> str:
+    """Return a budget month snapshot: RTA, Age of Money, totals, per-group table.
+
+    `month` is "current" (default) or ISO YYYY-MM-DD (first-of-month).
+    """
+    async with await _s.get_ynab_client() as client:
+        months_api = _s.MonthsApi(client)
+        response = months_api.get_budget_month(budget_id, _resolve_month(month))
+        return _render_month_markdown(response.data.month)
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def get_category_for_month(budget_id: str, category_id: str, month: str = "current") -> str:
+    """Return budgeted/activity/balance/goal for a single category in a month."""
+    async with await _s.get_ynab_client() as client:
+        cats = _s.CategoriesApi(client)
+        response = cats.get_month_category_by_id(budget_id, _resolve_month(month), category_id)
+        return _render_month_category_markdown(response.data.category)
+
+
+@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
+async def assign_money(
+    budget_id: str,
+    category_id: str,
+    amount: float,
+    month: str = "current",
+) -> str:
+    """Set the budgeted amount for a category in a month (YNAB Rule 1).
+
+    `amount` is in dollars and will be converted to milliunits. This *sets*
+    (does not delta) the budgeted value, so calling twice with the same
+    amount is idempotent.
+    """
+    body = _s.PatchMonthCategoryWrapper(category=_s.SaveMonthCategory(budgeted=int(amount * 1000)))
+    async with await _s.get_ynab_client() as client:
+        cats = _s.CategoriesApi(client)
+        response = cats.update_month_category(budget_id, _resolve_month(month), category_id, body)
+        cat = response.data.category
+        return (
+            f"Assigned {_format_dollar_amount(amount)} to "
+            f"**{getattr(cat, 'name', category_id)}** for {month}."
+        )
+
+
+@_s.mcp.tool(annotations=_s.MUTATING_TOOL)
+async def move_money(
+    budget_id: str,
+    from_category_id: str,
+    to_category_id: str,
+    amount: float,
+    month: str = "current",
+) -> str:
+    """Reallocate money from one category to another in a month (YNAB Rule 3).
+
+    NOT idempotent — running twice doubles the move. Not transactional in
+    YNAB: if the credit step fails after the debit succeeds, the error
+    message includes the partially-applied state for manual recovery.
+    """
+    delta = int(amount * 1000)
+    m = _resolve_month(month)
+    async with await _s.get_ynab_client() as client:
+        cats = _s.CategoriesApi(client)
+        src = cats.get_month_category_by_id(budget_id, m, from_category_id).data.category
+        dst = cats.get_month_category_by_id(budget_id, m, to_category_id).data.category
+        new_src = int(src.budgeted) - delta
+        new_dst = int(dst.budgeted) + delta
+
+        cats.update_month_category(
+            budget_id,
+            m,
+            from_category_id,
+            _s.PatchMonthCategoryWrapper(category=_s.SaveMonthCategory(budgeted=new_src)),
+        )
+        try:
+            cats.update_month_category(
+                budget_id,
+                m,
+                to_category_id,
+                _s.PatchMonthCategoryWrapper(category=_s.SaveMonthCategory(budgeted=new_dst)),
+            )
+        except _s.ApiException as exc:
+            raise RuntimeError(
+                f"move_money partially applied: source category {from_category_id} "
+                f"debited to {new_src / 1000:.2f}, but credit to {to_category_id} "
+                f"failed ({exc}). Recover by manually setting {to_category_id} "
+                f"budgeted to {new_dst / 1000:.2f}, or reverse with "
+                f"move_money(to={from_category_id}, from={to_category_id}, "
+                f"amount={amount})."
+            ) from exc
+
+    return (
+        f"Moved {_format_dollar_amount(amount)} from "
+        f"**{getattr(src, 'name', from_category_id)}** → "
+        f"**{getattr(dst, 'name', to_category_id)}** ({month})."
+    )

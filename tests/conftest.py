@@ -56,6 +56,7 @@ def mock_ynab_apis(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         accounts=MagicMock(name="AccountsApi"),
         categories=MagicMock(name="CategoriesApi"),
         transactions=MagicMock(name="TransactionsApi"),
+        months=MagicMock(name="MonthsApi"),
     )
 
     class _DummyClientCtx:
@@ -73,5 +74,6 @@ def mock_ynab_apis(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(server, "AccountsApi", lambda client: apis.accounts)
     monkeypatch.setattr(server, "CategoriesApi", lambda client: apis.categories)
     monkeypatch.setattr(server, "TransactionsApi", lambda client: apis.transactions)
+    monkeypatch.setattr(server, "MonthsApi", lambda client: apis.months)
 
     return apis

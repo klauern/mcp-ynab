@@ -1,15 +1,35 @@
 [project]
 name = "mcp-ynab"
-version = "0.1.0"
-description = "MCP server for YNAB API integration"
+version = "0.2.0"
+description = "Model Context Protocol (MCP) server for the YNAB (You Need A Budget) API"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
+authors = [
+  { name = "Nick Klauer", email = "klauer@gmail.com" },
+]
+keywords = ["mcp", "ynab", "budget", "finance", "model-context-protocol", "anthropic"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business :: Financial",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
   "mcp[cli]>=1.20.0,<2.0.0",
   "pydantic>=2.10.0,<3",
   "ynab>=1.0.1",
   "python-dotenv>=1.0.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/klauern/mcp-ynab"
+Issues = "https://github.com/klauern/mcp-ynab/issues"
 
 [tool.ruff]
 line-length = 100

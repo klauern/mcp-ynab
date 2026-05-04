@@ -65,9 +65,11 @@ class AsyncYNABClient:
         return self.client
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.client:
-            # ApiClient doesn't have a close method, but we'll keep the context manager pattern
-            pass
+        # The underlying ynab.ApiClient.__exit__ is itself a no-op — the SDK
+        # uses a shared urllib3 pool manager with no per-client cleanup. We
+        # keep the async context manager so callers can use `async with` and
+        # so we have a hook if a future SDK version introduces real cleanup.
+        return None
 
 
 async def get_ynab_client() -> AsyncYNABClient:
@@ -431,12 +433,25 @@ async def get_accounts(budget_id: str) -> str:
 
 
 @mcp.tool(annotations=READ_ONLY_TOOL)
-async def get_transactions(budget_id: str, account_id: str) -> str:
+async def get_transactions(
+    budget_id: str,
+    account_id: str,
+    since_date: Annotated[
+        Optional[date],
+        Field(
+            description=(
+                "ISO date (YYYY-MM-DD) to fetch transactions since. "
+                "Defaults to the first day of the current month."
+            )
+        ),
+    ] = None,
+) -> str:
     """Get recent transactions for a specific account in a specific budget."""
     async with await get_ynab_client() as client:
         transactions_api = TransactionsApi(client)
         all_transactions: List[TransactionDetail] = []
-        since_date = datetime.now().replace(day=1).date()
+        if since_date is None:
+            since_date = datetime.now().replace(day=1).date()
         response = transactions_api.get_transactions_by_account(
             budget_id, account_id, since_date=since_date
         )

@@ -255,10 +255,10 @@ async def test_get_transactions_renders_table_for_recent_transactions(
 
 
 @pytest.mark.asyncio
-async def test_get_transactions_uses_start_of_current_month_for_since_date(
+async def test_get_transactions_defaults_to_start_of_current_month(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    """Documents the current month-to-date behavior; tracked for change in mcp-ynab-2wc."""
+    """When no since_date passed, defaults to first of current month."""
     mock_ynab_apis.transactions.get_transactions_by_account.return_value = _resp(transactions=[])
 
     await server.get_transactions("b-1", "acct-1")
@@ -266,6 +266,19 @@ async def test_get_transactions_uses_start_of_current_month_for_since_date(
     call = mock_ynab_apis.transactions.get_transactions_by_account.call_args
     expected_since = datetime.now().replace(day=1).date()
     assert call.kwargs["since_date"] == expected_since
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_honors_explicit_since_date(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transactions_by_account.return_value = _resp(transactions=[])
+    explicit = date(2025, 1, 15)
+
+    await server.get_transactions("b-1", "acct-1", since_date=explicit)
+
+    call = mock_ynab_apis.transactions.get_transactions_by_account.call_args
+    assert call.kwargs["since_date"] == explicit
 
 
 @pytest.mark.asyncio

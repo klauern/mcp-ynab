@@ -160,8 +160,13 @@ async def test_get_budgets_propagates_api_exception(mock_ynab_apis: SimpleNamesp
 
 @pytest.mark.asyncio
 async def test_get_account_balance_converts_milliunits_to_dollars(
-    mock_ynab_apis: SimpleNamespace,
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
     mock_ynab_apis.budgets.get_budgets.return_value = _resp(
         budgets=[_budget_mock("b-1", "Personal")]
     )
@@ -172,6 +177,49 @@ async def test_get_account_balance_converts_milliunits_to_dollars(
 
     assert result == pytest.approx(125.0)
     mock_ynab_apis.accounts.get_account_by_id.assert_called_once_with("b-1", "acct-1")
+
+
+@pytest.mark.asyncio
+async def test_get_account_balance_uses_preferred_budget_id_when_set(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("preferred-b")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    account_response = _resp(account=SimpleNamespace(balance=42_000))
+    mock_ynab_apis.accounts.get_account_by_id.return_value = account_response
+
+    result = await server.get_account_balance("acct-1")
+
+    assert result == pytest.approx(42.0)
+    # Preferred budget short-circuits the get_budgets fallback
+    mock_ynab_apis.budgets.get_budgets.assert_not_called()
+    mock_ynab_apis.accounts.get_account_by_id.assert_called_once_with("preferred-b", "acct-1")
+
+
+@pytest.mark.asyncio
+async def test_get_account_balance_falls_back_to_first_budget_when_no_preference(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("first-b", "Default")]
+    )
+    account_response = _resp(account=SimpleNamespace(balance=1_000))
+    mock_ynab_apis.accounts.get_account_by_id.return_value = account_response
+
+    result = await server.get_account_balance("acct-1")
+
+    assert result == pytest.approx(1.0)
+    mock_ynab_apis.budgets.get_budgets.assert_called_once()
+    mock_ynab_apis.accounts.get_account_by_id.assert_called_once_with("first-b", "acct-1")
 
 
 # ---------------------------------------------------------------------------

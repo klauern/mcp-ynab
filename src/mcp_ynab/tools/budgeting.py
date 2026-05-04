@@ -41,9 +41,11 @@ async def get_account_balance(account_id: str) -> float:
     """Get the current balance of a YNAB account (in dollars)."""
     async with await _s.get_ynab_client() as client:
         accounts_api = _s.AccountsApi(client)
-        budgets_api = _s.BudgetsApi(client)
-        budgets_response = budgets_api.get_budgets()
-        budget_id = budgets_response.data.budgets[0].id
+        budget_id = _s.ynab_resources.get_preferred_budget_id()
+        if not budget_id:
+            budgets_api = _s.BudgetsApi(client)
+            budgets_response = budgets_api.get_budgets()
+            budget_id = budgets_response.data.budgets[0].id
 
         response = accounts_api.get_account_by_id(budget_id, account_id)
         return float(response.data.account.balance) / 1000

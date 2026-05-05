@@ -17,9 +17,13 @@ against the FastMCP instance and resolve their dependencies.
 
 import logging
 
+from typing import Optional
+
 import mcp.types as types
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
+from pydantic import BaseModel, Field
+from ynab.api_client import ApiClient
 
 # SDK API classes & models kept at module scope so tests can patch them via
 # `monkeypatch.setattr(server, "<Name>", ...)`. Tool modules access them as
@@ -72,6 +76,67 @@ IDEMPOTENT_MUTATING_TOOL = types.ToolAnnotations(
 # `monkeypatch.setattr(server, "ynab_resources", isolated)` in tests rebinds
 # the name that tool/resource modules look up via `server.ynab_resources`.
 ynab_resources = YNABResources()
+
+
+class _BudgetChoice(BaseModel):
+    """Elicitation schema for selecting a budget when no preference is set."""
+
+    index: int = Field(description="Number of the budget to use (1-based).")
+    set_as_preferred: bool = Field(
+        default=False,
+        description="Save this budget as the preferred default for future calls.",
+    )
+
+
+async def _resolve_budget_id(client: ApiClient, ctx: Optional[Context]) -> str:
+    """Return the budget id to operate on.
+
+    Resolution order:
+    1. `ynab_resources.get_preferred_budget_id()` if set.
+    2. Single-budget shortcut — return the only budget without prompting.
+    3. `ctx.elicit(...)` to ask the user when multiple budgets exist.
+
+    When ``ctx`` is ``None`` and multiple budgets exist, raises ``ValueError``
+    rather than silently picking ``budgets[0]`` — the silent fallback was the
+    foot-gun this helper exists to remove.
+    """
+    budget_id = ynab_resources.get_preferred_budget_id()
+    if budget_id:
+        return budget_id
+
+    budgets_api = BudgetsApi(client)
+    budgets = budgets_api.get_budgets().data.budgets
+    if not budgets:
+        raise ValueError("No YNAB budgets available on this account.")
+    if len(budgets) == 1:
+        return budgets[0].id
+
+    if ctx is None:
+        raise ValueError(
+            "Multiple budgets exist but no preferred budget is set and no "
+            "MCP Context is available to elicit a choice. Call "
+            "set_preferred_budget_id first."
+        )
+
+    options = "\n".join(f"{i + 1}. {b.name} (id={b.id})" for i, b in enumerate(budgets))
+    result = await ctx.elicit(
+        message=f"Multiple YNAB budgets found. Choose one:\n{options}",
+        schema=_BudgetChoice,
+    )
+    if result.action == "accept":
+        choice = result.data
+        if choice.index < 1 or choice.index > len(budgets):
+            raise ValueError(
+                f"Selected budget index {choice.index} out of range 1..{len(budgets)}."
+            )
+        chosen = budgets[choice.index - 1]
+        if choice.set_as_preferred:
+            ynab_resources.set_preferred_budget_id(chosen.id)
+        return chosen.id
+    if result.action == "decline":
+        raise ValueError("Budget selection declined; cannot proceed.")
+    raise ValueError("Budget selection cancelled; cannot proceed.")
+
 
 # Trigger registration of all @mcp.tool and @mcp.resource decorators. These
 # imports must run after `mcp`, `ynab_resources`, and the SDK class names

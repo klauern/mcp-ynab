@@ -10,6 +10,7 @@ through late attribute lookup. Pure formatting helpers are imported from
 from datetime import date, timedelta
 from typing import Any, Dict, List, Literal, Optional, cast
 
+from mcp.server.fastmcp import Context
 from ynab.models.account import Account
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
 from ynab.models.patch_payee_wrapper import PatchPayeeWrapper
@@ -41,16 +42,11 @@ def _resolve_month(month: str) -> date:
 
 
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
-async def get_account_balance(account_id: str) -> float:
+async def get_account_balance(account_id: str, ctx: Optional[Context] = None) -> float:
     """Get the current balance of a YNAB account (in dollars)."""
     async with await _s.get_ynab_client() as client:
         accounts_api = _s.AccountsApi(client)
-        budget_id = _s.ynab_resources.get_preferred_budget_id()
-        if not budget_id:
-            budgets_api = _s.BudgetsApi(client)
-            budgets_response = budgets_api.get_budgets()
-            budget_id = budgets_response.data.budgets[0].id
-
+        budget_id = await _s._resolve_budget_id(client, ctx)
         response = accounts_api.get_account_by_id(budget_id, account_id)
         return float(response.data.account.balance) / 1000
 

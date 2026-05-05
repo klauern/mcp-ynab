@@ -201,7 +201,7 @@ async def test_get_account_balance_uses_preferred_budget_id_when_set(
 
 
 @pytest.mark.asyncio
-async def test_get_account_balance_falls_back_to_first_budget_when_no_preference(
+async def test_get_account_balance_uses_only_budget_when_no_preference(
     mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     from mcp_ynab.server import YNABResources
@@ -896,7 +896,7 @@ async def test_create_transaction_uses_preferred_budget_id_when_set(
 
 
 @pytest.mark.asyncio
-async def test_create_transaction_falls_back_to_first_budget_when_no_preference(
+async def test_create_transaction_uses_only_budget_when_no_preference(
     mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     from mcp_ynab.server import YNABResources
@@ -1958,3 +1958,230 @@ async def test_ping_returns_user_id_on_success(
     result = await server.ping()
 
     assert result == "ok (user_id=user-abc-123)"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_budget_id (elicitation helper)
+# ---------------------------------------------------------------------------
+
+
+class _FakeContext:
+    """Stand-in for FastMCP `Context` whose `elicit` returns a preset result."""
+
+    def __init__(self, result: object) -> None:
+        self._result = result
+        self.calls: list[tuple[str, type]] = []
+
+    async def elicit(self, message: str, schema: type) -> object:
+        self.calls.append((message, schema))
+        return self._result
+
+
+def _accept(index: int, set_as_preferred: bool = False) -> SimpleNamespace:
+    """Mimic an `AcceptedElicitation` with a `.data` Pydantic-model proxy."""
+    return SimpleNamespace(
+        action="accept",
+        data=SimpleNamespace(index=index, set_as_preferred=set_as_preferred),
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_returns_preferred_when_set(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("preferred-b")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    result = await server._resolve_budget_id(client=object(), ctx=None)
+
+    assert result == "preferred-b"
+    mock_ynab_apis.budgets.get_budgets.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_short_circuits_single_budget(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("only-b", "Only Budget")]
+    )
+
+    ctx = _FakeContext(_accept(index=1))
+    result = await server._resolve_budget_id(client=object(), ctx=ctx)
+
+    assert result == "only-b"
+    assert ctx.calls == [], "Single budget should not trigger elicitation"
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_raises_when_no_budgets(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(budgets=[])
+
+    with pytest.raises(ValueError, match="No YNAB budgets"):
+        await server._resolve_budget_id(client=object(), ctx=None)
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_raises_when_multiple_and_no_ctx(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """No silent budgets[0] fallback — the foot-gun this helper removes."""
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    )
+
+    with pytest.raises(ValueError, match="no preferred budget"):
+        await server._resolve_budget_id(client=object(), ctx=None)
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_elicits_and_returns_chosen(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("first-b", "Personal"), _budget_mock("second-b", "Work")]
+    )
+
+    ctx = _FakeContext(_accept(index=2))
+    result = await server._resolve_budget_id(client=object(), ctx=ctx)
+
+    assert result == "second-b"
+    assert isolated.get_preferred_budget_id() is None, "set_as_preferred=False, must not persist"
+    assert len(ctx.calls) == 1
+    message, schema = ctx.calls[0]
+    assert "Personal" in message and "Work" in message
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_persists_preference_when_requested(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    )
+
+    ctx = _FakeContext(_accept(index=1, set_as_preferred=True))
+    result = await server._resolve_budget_id(client=object(), ctx=ctx)
+
+    assert result == "a-b"
+    assert isolated.get_preferred_budget_id() == "a-b"
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_raises_on_decline(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    )
+
+    ctx = _FakeContext(SimpleNamespace(action="decline"))
+    with pytest.raises(ValueError, match="declined"):
+        await server._resolve_budget_id(client=object(), ctx=ctx)
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_raises_on_cancel(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    )
+
+    ctx = _FakeContext(SimpleNamespace(action="cancel"))
+    with pytest.raises(ValueError, match="cancelled"):
+        await server._resolve_budget_id(client=object(), ctx=ctx)
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_raises_on_out_of_range_index(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    )
+
+    ctx = _FakeContext(_accept(index=99))
+    with pytest.raises(ValueError, match="out of range"):
+        await server._resolve_budget_id(client=object(), ctx=ctx)
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_elicits_when_multiple_budgets(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """End-to-end: tool routes through helper and uses elicited budget id."""
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("first-b", "A"), _budget_mock("second-b", "B")]
+    )
+    created_txn = MagicMock()
+    created_txn.to_dict.return_value = {"id": "new-txn"}
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(transaction=created_txn)
+
+    ctx = _FakeContext(_accept(index=2))
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=10.0,
+        payee_name="Test",
+        ctx=ctx,
+    )
+
+    assert result == {"id": "new-txn"}
+    call = mock_ynab_apis.transactions.create_transaction.call_args
+    assert call.args[0] == "second-b", "tool must use elicited budget, not first"
+
+
+@pytest.mark.asyncio
+async def test_get_account_balance_elicits_when_multiple_budgets(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
+        budgets=[_budget_mock("first-b", "A"), _budget_mock("second-b", "B")]
+    )
+    mock_ynab_apis.accounts.get_account_by_id.return_value = _resp(
+        account=SimpleNamespace(balance=50_000)
+    )
+
+    ctx = _FakeContext(_accept(index=1))
+    result = await server.get_account_balance("acct-1", ctx=ctx)
+
+    assert result == pytest.approx(50.0)
+    mock_ynab_apis.accounts.get_account_by_id.assert_called_once_with("first-b", "acct-1")

@@ -12,6 +12,7 @@ import difflib
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
+from mcp.server.fastmcp import Context
 from pydantic import Field
 from ynab.api_client import ApiClient
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
@@ -102,19 +103,15 @@ async def create_transaction(
     payee_name: str,
     category_name: Optional[str] = None,
     memo: Optional[str] = None,
+    ctx: Optional[Context] = None,
 ) -> Dict[str, Any]:
     """Create a new transaction in YNAB."""
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
-        budgets_api = _s.BudgetsApi(client)
 
         amount_milliunits = int(amount * 1000)
 
-        # Use preferred budget ID if available, otherwise fetch a list of budgets
-        budget_id = _s.ynab_resources.get_preferred_budget_id()
-        if not budget_id:
-            budgets_response = budgets_api.get_budgets()
-            budget_id = budgets_response.data.budgets[0].id
+        budget_id = await _s._resolve_budget_id(client, ctx)
 
         category_id: Optional[str] = None
         if category_name:

@@ -29,10 +29,10 @@ tasks:
       - npm install --global @modelcontextprotocol/inspector
 
   install:
-    desc: "Install the package locally"
+    desc: "Install mcp-ynab as a global CLI tool (isolated env on $PATH)"
     cmds:
       - uv sync
-      - uv pip install .
+      - uv tool install --reinstall --force .
       - echo "installed mcp-ynab at $(which mcp-ynab)"
 
   test:

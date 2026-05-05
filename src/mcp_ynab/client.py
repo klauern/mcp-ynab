@@ -1,12 +1,13 @@
 """YNAB API client wrapper and config-directory resolution.
 
-`_get_client` builds a `Configuration` from `YNAB_API_KEY` and returns the raw
-synchronous `ApiClient`. `AsyncYNABClient` is a thin async-context-manager
+`_get_client` builds a `Configuration` from the resolved API key and returns
+the raw synchronous `ApiClient`. `AsyncYNABClient` is a thin async-context-manager
 wrapper around it so callers can use `async with` ergonomics. `_resolve_config_dir`
 chooses where file-backed state (preferred budget, category cache) lives, honoring
 `XDG_CONFIG_HOME`.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -14,12 +15,67 @@ from typing import Optional
 from ynab.api_client import ApiClient
 from ynab.configuration import Configuration
 
+logger = logging.getLogger(__name__)
+
+# Keychain identifiers for storing the YNAB personal access token.
+KEYRING_SERVICE = "mcp-ynab"
+KEYRING_USERNAME = "YNAB_API_KEY"
+
+
+def _resolve_api_key() -> Optional[str]:
+    """Return the YNAB API key, or None if no source has one.
+
+    Resolution order: ``YNAB_API_KEY`` env var, then OS keychain. Env wins so
+    CI runs and ad-hoc shell overrides remain easy; the keychain is durable
+    storage for desktop users who don't want a shell-profile entry.
+
+    Keyring backend errors (headless Linux without a secret-service daemon,
+    locked-down Docker images, etc.) are swallowed and logged at debug — they
+    must not break the env-only path.
+    """
+    env_key = os.getenv("YNAB_API_KEY")
+    if env_key:
+        return env_key
+
+    try:
+        import keyring
+
+        stored = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        if stored:
+            return stored
+    except Exception as exc:  # noqa: BLE001 — keyring backends raise varied errors
+        logger.debug("Keyring lookup failed; falling through: %s", exc)
+
+    return None
+
+
+def _store_api_key(api_key: str) -> None:
+    """Persist ``api_key`` to the OS keychain. Raises on backend failure."""
+    import keyring
+
+    keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, api_key)
+
+
+def _delete_stored_api_key() -> bool:
+    """Remove a previously stored key from the keychain. Returns True if removed."""
+    try:
+        import keyring
+
+        keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Keyring delete failed: %s", exc)
+        return False
+
 
 async def _get_client() -> ApiClient:
-    """Get a configured YNAB API client. Reads API key from environment variables."""
-    ynab_api_key = os.getenv("YNAB_API_KEY")
+    """Get a configured YNAB API client using the resolved API key."""
+    ynab_api_key = _resolve_api_key()
     if not ynab_api_key:
-        raise ValueError("YNAB_API_KEY not found in environment variables")
+        raise ValueError(
+            "YNAB_API_KEY not found. Set the YNAB_API_KEY environment variable "
+            "or store it in the OS keychain via the set_api_key tool."
+        )
     configuration = Configuration(access_token=ynab_api_key)
     return ApiClient(configuration)
 

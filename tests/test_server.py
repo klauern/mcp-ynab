@@ -62,9 +62,90 @@ async def test_tools_include_annotations_for_read_only_and_mutating() -> None:
 @pytest.mark.asyncio
 async def test_get_client_reads_api_key_from_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("YNAB_API_KEY", raising=False)
+    # Block the keychain fallback so a developer's stored key can't satisfy this.
+    monkeypatch.setattr(server, "_resolve_api_key", lambda: None)
 
     with pytest.raises(ValueError, match="YNAB_API_KEY"):
         await server._get_client()
+
+
+def test_resolve_api_key_prefers_env_over_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("YNAB_API_KEY", "from-env")
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda _s, _u: "from-keychain")
+
+    from mcp_ynab.client import _resolve_api_key
+
+    assert _resolve_api_key() == "from-env"
+
+
+def test_resolve_api_key_falls_back_to_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("YNAB_API_KEY", raising=False)
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda _s, _u: "from-keychain")
+
+    from mcp_ynab.client import _resolve_api_key
+
+    assert _resolve_api_key() == "from-keychain"
+
+
+def test_resolve_api_key_returns_none_when_both_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("YNAB_API_KEY", raising=False)
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda _s, _u: None)
+
+    from mcp_ynab.client import _resolve_api_key
+
+    assert _resolve_api_key() is None
+
+
+def test_resolve_api_key_swallows_keyring_backend_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("YNAB_API_KEY", raising=False)
+    import keyring
+
+    def _boom(_s: str, _u: str) -> str:
+        raise RuntimeError("no secret-service daemon")
+
+    monkeypatch.setattr(keyring, "get_password", _boom)
+
+    from mcp_ynab.client import _resolve_api_key
+
+    assert _resolve_api_key() is None
+
+
+@pytest.mark.asyncio
+async def test_set_api_key_tool_persists_to_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(server, "_store_api_key", lambda key: captured.setdefault("key", key))
+
+    msg = await server.set_api_key("  abc-123  ")
+
+    assert captured == {"key": "abc-123"}
+    assert "stored" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_set_api_key_tool_rejects_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "_store_api_key", lambda key: None)
+
+    with pytest.raises(ValueError, match="non-empty"):
+        await server.set_api_key("   ")
+
+
+@pytest.mark.asyncio
+async def test_clear_api_key_tool_reports_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "_delete_stored_api_key", lambda: True)
+    msg = await server.clear_api_key()
+    assert "removed" in msg.lower()
+
+    monkeypatch.setattr(server, "_delete_stored_api_key", lambda: False)
+    msg = await server.clear_api_key()
+    assert "no" in msg.lower()
 
 
 @pytest.mark.asyncio

@@ -46,8 +46,11 @@ from ynab.rest import ApiException  # noqa: F401
 # and tests after the refactor.
 from .client import (  # noqa: F401
     AsyncYNABClient,
+    _delete_stored_api_key,
     _get_client,
+    _resolve_api_key,
     _resolve_config_dir,
+    _store_api_key,
     get_ynab_client,
 )
 from .formatters import (  # noqa: F401
@@ -143,7 +146,7 @@ async def _resolve_budget_id(client: ApiClient, ctx: Optional[Context]) -> str:
 # are bound above so the submodules can resolve them via `server.<name>`.
 from . import prompts  # noqa: E402, F401
 from . import resources  # noqa: E402, F401
-from .tools import budgeting, transactions  # noqa: E402, F401
+from .tools import budgeting, preferences, transactions  # noqa: E402, F401
 
 # Re-export tool and resource callables so `server.<tool>(...)` works for
 # tests and downstream code. The decorators above are what register the
@@ -175,6 +178,10 @@ from .tools.budgeting import (  # noqa: E402, F401
 )
 from .tools.budgeting import (  # noqa: E402, F401
     spending_by_payee as spending_by_payee_tool,
+)
+from .tools.preferences import (  # noqa: E402, F401
+    clear_api_key,
+    set_api_key,
 )
 from .tools.transactions import (  # noqa: E402, F401
     _CategoryChoice,

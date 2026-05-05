@@ -665,6 +665,205 @@ async def test_cache_categories_tool_writes_to_resource_store(
 
 
 # ---------------------------------------------------------------------------
+# _find_category_id (cache-first + fuzzy matching helper)
+# ---------------------------------------------------------------------------
+
+
+def _seed_cache(monkeypatch: pytest.MonkeyPatch, tmp_path, budget_id: str, names_with_ids):
+    """Helper: build an isolated YNABResources, cache categories, and patch in."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    raw = [
+        {"id": cid, "name": name, "category_group_name": group}
+        for cid, name, group in names_with_ids
+    ]
+    isolated.cache_categories(budget_id, raw)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    return isolated
+
+
+@pytest.mark.asyncio
+async def test_find_category_id_cache_hit_exact_skips_api(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(
+        monkeypatch,
+        tmp_path,
+        "b-1",
+        [("c-rent", "Rent", "Bills"), ("c-food", "Groceries", "Food")],
+    )
+
+    async with await server.get_ynab_client() as client:
+        candidates = await server._find_category_id(client, "b-1", "Groceries")
+
+    assert len(candidates) == 1
+    assert candidates[0]["id"] == "c-food"
+    assert candidates[0]["name"] == "Groceries"
+    mock_ynab_apis.categories.get_categories.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_find_category_id_cache_hit_case_insensitive(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(monkeypatch, tmp_path, "b-1", [("c-food", "Groceries", "Food")])
+
+    async with await server.get_ynab_client() as client:
+        candidates = await server._find_category_id(client, "b-1", "groceries")
+
+    assert len(candidates) == 1
+    assert candidates[0]["id"] == "c-food"
+
+
+@pytest.mark.asyncio
+async def test_find_category_id_empty_cache_bootstraps_via_api(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    cat = _category_mock("c-rent", "Rent", 100_000, 50_000)
+    cat.to_dict.return_value = {
+        "id": "c-rent",
+        "name": "Rent",
+        "category_group_name": "Bills",
+    }
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[_category_group_mock("Bills", [cat])]
+    )
+
+    async with await server.get_ynab_client() as client:
+        candidates = await server._find_category_id(client, "b-1", "Rent")
+
+    assert len(candidates) == 1
+    assert candidates[0]["id"] == "c-rent"
+    mock_ynab_apis.categories.get_categories.assert_called_once_with("b-1")
+    # Cache should now be populated.
+    assert isolated.get_cached_category_records("b-1") == [
+        {"id": "c-rent", "name": "Rent", "group": "Bills"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_find_category_id_fuzzy_single_with_emoji(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(
+        monkeypatch,
+        tmp_path,
+        "b-1",
+        [("c-food", "Groceries 🛒", "Food"), ("c-rent", "Rent", "Bills")],
+    )
+
+    async with await server.get_ynab_client() as client:
+        candidates = await server._find_category_id(client, "b-1", "groceries")
+
+    assert len(candidates) == 1
+    assert candidates[0]["id"] == "c-food"
+    assert candidates[0]["name"] == "Groceries 🛒"
+    mock_ynab_apis.categories.get_categories.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_find_category_id_substring_multi_candidates(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """bd issue example: 'groceries' should surface both 'Groceries 🛒' and
+    'Groceries (& Household)' as candidates so the caller can elicit a choice.
+    """
+    _seed_cache(
+        monkeypatch,
+        tmp_path,
+        "b-1",
+        [
+            ("c-food1", "Groceries 🛒", "Food"),
+            ("c-food2", "Groceries (& Household)", "Food"),
+            ("c-rent", "Rent", "Bills"),
+        ],
+    )
+
+    async with await server.get_ynab_client() as client:
+        candidates = await server._find_category_id(client, "b-1", "groceries")
+
+    ids = {c["id"] for c in candidates}
+    assert ids == {"c-food1", "c-food2"}
+
+
+@pytest.mark.asyncio
+async def test_find_category_id_fuzzy_typo_recovery(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Typos like 'grocries' (missing 'e') should still resolve via difflib."""
+    _seed_cache(
+        monkeypatch,
+        tmp_path,
+        "b-1",
+        [("c-food", "Groceries", "Food"), ("c-rent", "Rent", "Bills")],
+    )
+
+    async with await server.get_ynab_client() as client:
+        candidates = await server._find_category_id(client, "b-1", "grocries")
+
+    assert len(candidates) >= 1
+    assert candidates[0]["id"] == "c-food"
+
+
+@pytest.mark.asyncio
+async def test_find_category_id_no_match_returns_empty_list(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(monkeypatch, tmp_path, "b-1", [("c-rent", "Rent", "Bills")])
+    # Stale-cache refresh path: API returns the same data, still no match.
+    cat = _category_mock("c-rent", "Rent", 0, 0)
+    cat.to_dict.return_value = {
+        "id": "c-rent",
+        "name": "Rent",
+        "category_group_name": "Bills",
+    }
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[_category_group_mock("Bills", [cat])]
+    )
+
+    async with await server.get_ynab_client() as client:
+        candidates = await server._find_category_id(client, "b-1", "Spaceships")
+
+    assert candidates == []
+
+
+@pytest.mark.asyncio
+async def test_find_category_id_stale_cache_refresh_finds_new_category(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(monkeypatch, tmp_path, "b-1", [("c-rent", "Rent", "Bills")])
+
+    fresh_cat = _category_mock("c-new", "Subscriptions", 0, 0)
+    fresh_cat.to_dict.return_value = {
+        "id": "c-new",
+        "name": "Subscriptions",
+        "category_group_name": "Bills",
+    }
+    rent = _category_mock("c-rent", "Rent", 0, 0)
+    rent.to_dict.return_value = {
+        "id": "c-rent",
+        "name": "Rent",
+        "category_group_name": "Bills",
+    }
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[_category_group_mock("Bills", [rent, fresh_cat])]
+    )
+
+    async with await server.get_ynab_client() as client:
+        candidates = await server._find_category_id(client, "b-1", "Subscriptions")
+
+    assert len(candidates) == 1
+    assert candidates[0]["id"] == "c-new"
+    mock_ynab_apis.categories.get_categories.assert_called_once_with("b-1")
+
+
+# ---------------------------------------------------------------------------
 # create_transaction (mutating tool, mocked end-to-end)
 # ---------------------------------------------------------------------------
 

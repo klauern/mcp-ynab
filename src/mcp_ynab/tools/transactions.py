@@ -8,11 +8,13 @@ API classes (`TransactionsApi`, `BudgetsApi`, `AccountsApi`,
 monkeypatches propagate.
 """
 
+import difflib
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import Field
 from ynab.api_client import ApiClient
+from ynab.models.category_group_with_categories import CategoryGroupWithCategories
 from ynab.models.new_transaction import NewTransaction
 from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
 from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
@@ -25,16 +27,72 @@ from .. import server as _s
 from ..formatters import _build_markdown_table
 
 
-async def _find_category_id(client: ApiClient, budget_id: str, category_name: str) -> Optional[str]:
-    """Find a category ID by name."""
+def _refresh_category_cache(client: ApiClient, budget_id: str) -> List[Dict[str, Any]]:
+    """Fetch categories from YNAB and write them to the cache; return the records."""
     categories_api = _s.CategoriesApi(client)
-    categories_response = categories_api.get_categories(budget_id)
-    categories = categories_response.data.category_groups
-    for group in categories:
-        for cat in group.categories:
-            if cat.name.lower() == category_name.lower():
-                return cat.id
-    return None
+    response = categories_api.get_categories(budget_id)
+    raw_categories: List[Any] = []
+    for group in response.data.category_groups:
+        if isinstance(group, CategoryGroupWithCategories):
+            raw_categories.extend(group.categories)
+    _s.ynab_resources.cache_categories(budget_id, [cat.to_dict() for cat in raw_categories])
+    return _s.ynab_resources.get_cached_category_records(budget_id)
+
+
+def _match_category(records: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    """Return matching category records, in priority order:
+
+    1. Exact case-insensitive match → single record.
+    2. Substring match (query in name) → all hits — handles 'groceries' →
+       'Groceries 🛒' / 'Groceries (& Household)'.
+    3. Fuzzy `difflib.get_close_matches(cutoff=0.6)` → typo recovery.
+    """
+    q = query.lower()
+    names_lower = [(r.get("name") or "").lower() for r in records]
+
+    exact = [r for r, n in zip(records, names_lower) if n == q]
+    if exact:
+        return exact[:1]
+
+    substring = [r for r, n in zip(records, names_lower) if q and q in n]
+    if substring:
+        return substring
+
+    close = difflib.get_close_matches(q, names_lower, n=5, cutoff=0.6)
+    if not close:
+        return []
+    matched: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for name_lower in close:
+        for r, rn in zip(records, names_lower):
+            if rn == name_lower and r.get("id") not in seen_ids:
+                matched.append(r)
+                seen_ids.add(r.get("id"))
+                break
+    return matched
+
+
+async def _find_category_id(
+    client: ApiClient, budget_id: str, category_name: str
+) -> List[Dict[str, Any]]:
+    """Find category candidates by name using the cache, with API refresh on miss.
+
+    Returns a list of `{id, name, group}` records: empty = no match,
+    single = unambiguous, multiple = caller should elicit a choice.
+    """
+    records = _s.ynab_resources.get_cached_category_records(budget_id)
+    refreshed = False
+    if not records:
+        records = _refresh_category_cache(client, budget_id)
+        refreshed = True
+
+    matches = _match_category(records, category_name)
+    if matches or refreshed:
+        return matches
+
+    # Cache had data but matched nothing — refresh once in case it's stale.
+    records = _refresh_category_cache(client, budget_id)
+    return _match_category(records, category_name)
 
 
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
@@ -58,9 +116,12 @@ async def create_transaction(
             budgets_response = budgets_api.get_budgets()
             budget_id = budgets_response.data.budgets[0].id
 
-        category_id = None
+        category_id: Optional[str] = None
         if category_name:
-            category_id = await _find_category_id(client, budget_id, category_name)
+            candidates = await _find_category_id(client, budget_id, category_name)
+            if len(candidates) == 1:
+                category_id = candidates[0]["id"]
+            # 0 or 2+ candidates → leave uncategorized; qlh.2 will add elicitation.
 
         # Create transaction data
         transaction = NewTransaction(

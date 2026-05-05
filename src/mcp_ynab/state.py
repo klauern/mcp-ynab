@@ -68,6 +68,10 @@ class YNABResources:
         with open(self._preferred_budget_id_file, "w", encoding="utf-8") as f:
             f.write(budget_id)
 
+    def get_cached_category_records(self, budget_id: str) -> List[Dict[str, Any]]:
+        """Return raw cached category records ({id, name, group}) for a budget."""
+        return list(self._category_cache.get(budget_id, []))
+
     def get_cached_categories(self, budget_id: str) -> list[types.TextContent]:
         """Get categories from the cache formatted for MCP resources."""
         cached_categories = self._category_cache.get(budget_id, [])

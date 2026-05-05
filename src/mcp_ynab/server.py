@@ -177,10 +177,12 @@ from .tools.budgeting import (  # noqa: E402, F401
     spending_by_payee as spending_by_payee_tool,
 )
 from .tools.transactions import (  # noqa: E402, F401
+    _CategoryChoice,
     _filter_transactions,
     _find_category_id,
     _find_transaction_by_id,
     _get_transaction_row,
+    _resolve_category_id,
     approve_transactions,
     bulk_categorize,
     categorize_transaction,

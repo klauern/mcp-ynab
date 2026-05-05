@@ -2185,3 +2185,234 @@ async def test_get_account_balance_elicits_when_multiple_budgets(
 
     assert result == pytest.approx(50.0)
     mock_ynab_apis.accounts.get_account_by_id.assert_called_once_with("first-b", "acct-1")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_category_id (elicitation helper for create_transaction)
+# ---------------------------------------------------------------------------
+
+
+def _accept_category(index: int) -> SimpleNamespace:
+    """Mimic an `AcceptedElicitation` for `_CategoryChoice`."""
+    return SimpleNamespace(action="accept", data=SimpleNamespace(index=index))
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_exact_match_skips_elicit(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(monkeypatch, tmp_path, "b-1", [("c-food", "Groceries", "Food")])
+    ctx = _FakeContext(_accept_category(index=99))  # would fail if elicited
+
+    async with await server.get_ynab_client() as client:
+        result = await server._resolve_category_id(client, "b-1", "Groceries", ctx)
+
+    assert result == "c-food"
+    assert ctx.calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_no_ctx_returns_none_for_none_name(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(monkeypatch, tmp_path, "b-1", [("c-rent", "Rent", "Bills")])
+
+    async with await server.get_ynab_client() as client:
+        result = await server._resolve_category_id(client, "b-1", None, ctx=None)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_no_ctx_returns_none_when_ambiguous(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(
+        monkeypatch,
+        tmp_path,
+        "b-1",
+        [("c-a", "Groceries 🛒", "Food"), ("c-b", "Groceries (Household)", "Bills")],
+    )
+
+    async with await server.get_ynab_client() as client:
+        result = await server._resolve_category_id(client, "b-1", "groceries", ctx=None)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_elicits_from_full_list_when_name_none(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(
+        monkeypatch,
+        tmp_path,
+        "b-1",
+        [("c-rent", "Rent", "Bills"), ("c-food", "Groceries", "Food")],
+    )
+    ctx = _FakeContext(_accept_category(index=2))
+
+    async with await server.get_ynab_client() as client:
+        result = await server._resolve_category_id(client, "b-1", None, ctx)
+
+    assert result == "c-food"
+    assert len(ctx.calls) == 1
+    message, schema = ctx.calls[0]
+    assert "Rent" in message and "Groceries" in message
+    assert schema is server._CategoryChoice
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_elicits_from_candidates_when_ambiguous(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(
+        monkeypatch,
+        tmp_path,
+        "b-1",
+        [
+            ("c-rent", "Rent", "Bills"),
+            ("c-a", "Groceries 🛒", "Food"),
+            ("c-b", "Groceries (Household)", "Bills"),
+        ],
+    )
+    ctx = _FakeContext(_accept_category(index=2))
+
+    async with await server.get_ynab_client() as client:
+        result = await server._resolve_category_id(client, "b-1", "groceries", ctx)
+
+    assert result == "c-b"  # second candidate (Rent excluded — substring match only)
+    message, _ = ctx.calls[0]
+    assert "Multiple categories match" in message
+    assert "Rent" not in message  # only candidates, not full list
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_elicits_full_list_on_zero_matches(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(
+        monkeypatch,
+        tmp_path,
+        "b-1",
+        [("c-rent", "Rent", "Bills"), ("c-food", "Groceries", "Food")],
+    )
+    # `_find_category_id` triggers a stale-cache refresh on a 0-match miss,
+    # so the API must return the same records to keep the cache populated.
+    cat_rent = _category_mock("c-rent", "Rent", 0, 0)
+    cat_rent.to_dict.return_value = {
+        "id": "c-rent",
+        "name": "Rent",
+        "category_group_name": "Bills",
+    }
+    cat_food = _category_mock("c-food", "Groceries", 0, 0)
+    cat_food.to_dict.return_value = {
+        "id": "c-food",
+        "name": "Groceries",
+        "category_group_name": "Food",
+    }
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[_category_group_mock("Bills", [cat_rent, cat_food])]
+    )
+    ctx = _FakeContext(_accept_category(index=1))
+
+    async with await server.get_ynab_client() as client:
+        result = await server._resolve_category_id(client, "b-1", "wxyz-no-match", ctx)
+
+    assert result == "c-rent"
+    message, _ = ctx.calls[0]
+    assert "No category matched" in message
+    assert "Rent" in message and "Groceries" in message
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_index_zero_returns_none(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(monkeypatch, tmp_path, "b-1", [("c-rent", "Rent", "Bills")])
+    ctx = _FakeContext(_accept_category(index=0))
+
+    async with await server.get_ynab_client() as client:
+        result = await server._resolve_category_id(client, "b-1", None, ctx)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_decline_returns_none(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(monkeypatch, tmp_path, "b-1", [("c-rent", "Rent", "Bills")])
+    ctx = _FakeContext(SimpleNamespace(action="decline"))
+
+    async with await server.get_ynab_client() as client:
+        result = await server._resolve_category_id(client, "b-1", None, ctx)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_out_of_range_raises(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _seed_cache(monkeypatch, tmp_path, "b-1", [("c-rent", "Rent", "Bills")])
+    ctx = _FakeContext(_accept_category(index=99))
+
+    async with await server.get_ynab_client() as client:
+        with pytest.raises(ValueError, match="out of range"):
+            await server._resolve_category_id(client, "b-1", None, ctx)
+
+
+@pytest.mark.asyncio
+async def test_resolve_category_id_returns_none_when_cache_empty_and_no_match(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """When `category_name=None` and no categories exist anywhere, return None."""
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    mock_ynab_apis.categories.get_categories.return_value = _resp(category_groups=[])
+    ctx = _FakeContext(_accept_category(index=1))
+
+    async with await server.get_ynab_client() as client:
+        result = await server._resolve_category_id(client, "b-1", None, ctx)
+
+    assert result is None
+    assert ctx.calls == []  # nothing to elicit
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_elicits_category_when_ambiguous(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """End-to-end: create_transaction triggers category elicitation."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    isolated.cache_categories(
+        "b-1",
+        [
+            {"id": "c-a", "name": "Groceries 🛒", "category_group_name": "Food"},
+            {"id": "c-b", "name": "Groceries (Household)", "category_group_name": "Bills"},
+        ],
+    )
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(
+        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-1", "category_id": "c-b"})
+    )
+    ctx = _FakeContext(_accept_category(index=2))
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=12.34,
+        payee_name="Trader Joe's",
+        category_name="groceries",
+        ctx=ctx,
+    )
+
+    assert result == {"id": "t-1", "category_id": "c-b"}
+    # The wrapper passed to YNAB carried our chosen category_id.
+    args, _ = mock_ynab_apis.transactions.create_transaction.call_args
+    wrapper = args[1]
+    assert wrapper.transaction.category_id == "c-b"

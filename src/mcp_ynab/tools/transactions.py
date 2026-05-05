@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from mcp.server.fastmcp import Context
-from pydantic import Field
+from pydantic import BaseModel, Field
 from ynab.api_client import ApiClient
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
 from ynab.models.new_transaction import NewTransaction
@@ -96,6 +96,100 @@ async def _find_category_id(
     return _match_category(records, category_name)
 
 
+class _CategoryChoice(BaseModel):
+    """Elicitation schema for selecting a category in `create_transaction`."""
+
+    index: int = Field(
+        description=(
+            "Number of the category to use (1-based). Use 0 to leave the transaction uncategorized."
+        )
+    )
+
+
+def _format_category_options(records: List[Dict[str, Any]]) -> str:
+    """Render `1. Name (Group)` lines for elicitation prompts."""
+    lines: List[str] = []
+    for i, r in enumerate(records, start=1):
+        name = r.get("name") or "(unnamed)"
+        group = r.get("category_group_name") or r.get("group")
+        suffix = f" — {group}" if group else ""
+        lines.append(f"{i}. {name}{suffix}")
+    return "\n".join(lines)
+
+
+async def _resolve_category_id(
+    client: ApiClient,
+    budget_id: str,
+    category_name: Optional[str],
+    ctx: Optional[Context],
+) -> Optional[str]:
+    """Resolve a category id, eliciting from the user when needed.
+
+    Resolution rules:
+    - ``category_name`` given and matches exactly one cached record → that id.
+    - ``category_name`` given and matches multiple → elicit from candidates.
+    - ``category_name`` given and matches none → elicit from full cached list
+      (with a "no match" hint).
+    - ``category_name`` is ``None`` → elicit from full cached list.
+    - ``ctx`` is ``None`` → preserve the silent fallback: return ``None``
+      (transaction posts uncategorized) rather than raise.
+
+    The elicitation schema offers `index=0` to opt out of categorization.
+    """
+    if category_name:
+        candidates = await _find_category_id(client, budget_id, category_name)
+        if len(candidates) == 1:
+            return candidates[0]["id"]
+        if ctx is None:
+            return None
+        if len(candidates) > 1:
+            options = _format_category_options(candidates)
+            message = (
+                f"Multiple categories match '{category_name}'. Choose one "
+                f"(or 0 to leave uncategorized):\n{options}"
+            )
+            return await _elicit_category(ctx, candidates, message)
+        # No match — fall through to full-list elicitation with hint.
+        records = _s.ynab_resources.get_cached_category_records(budget_id)
+        if not records:
+            records = _refresh_category_cache(client, budget_id)
+        if not records:
+            return None
+        options = _format_category_options(records)
+        message = (
+            f"No category matched '{category_name}'. Choose one "
+            f"(or 0 to leave uncategorized):\n{options}"
+        )
+        return await _elicit_category(ctx, records, message)
+
+    # category_name is None.
+    if ctx is None:
+        return None
+    records = _s.ynab_resources.get_cached_category_records(budget_id)
+    if not records:
+        records = _refresh_category_cache(client, budget_id)
+    if not records:
+        return None
+    options = _format_category_options(records)
+    message = f"Choose a category for this transaction (or 0 to leave uncategorized):\n{options}"
+    return await _elicit_category(ctx, records, message)
+
+
+async def _elicit_category(
+    ctx: Context, records: List[Dict[str, Any]], message: str
+) -> Optional[str]:
+    """Elicit a category choice; ``index=0`` and decline/cancel return ``None``."""
+    result = await ctx.elicit(message=message, schema=_CategoryChoice)
+    if result.action != "accept":
+        return None
+    choice = result.data
+    if choice.index == 0:
+        return None
+    if choice.index < 1 or choice.index > len(records):
+        raise ValueError(f"Selected category index {choice.index} out of range 0..{len(records)}.")
+    return records[choice.index - 1]["id"]
+
+
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
 async def create_transaction(
     account_id: str,
@@ -113,12 +207,7 @@ async def create_transaction(
 
         budget_id = await _s._resolve_budget_id(client, ctx)
 
-        category_id: Optional[str] = None
-        if category_name:
-            candidates = await _find_category_id(client, budget_id, category_name)
-            if len(candidates) == 1:
-                category_id = candidates[0]["id"]
-            # 0 or 2+ candidates → leave uncategorized; qlh.2 will add elicitation.
+        category_id = await _resolve_category_id(client, budget_id, category_name, ctx)
 
         # Create transaction data
         transaction = NewTransaction(

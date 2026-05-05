@@ -190,6 +190,65 @@ async def _elicit_category(
     return records[choice.index - 1]["id"]
 
 
+class _PostConfirmation(BaseModel):
+    """Elicitation schema for confirming a `create_transaction` post."""
+
+    confirm: bool = Field(
+        description="True to post the transaction; False to cancel without posting.",
+    )
+
+
+def _category_display_name(budget_id: str, category_id: Optional[str]) -> Optional[str]:
+    """Look up a cached category name by id; return ``None`` if not found."""
+    if not category_id:
+        return None
+    for record in _s.ynab_resources.get_cached_category_records(budget_id) or []:
+        if record.get("id") == category_id:
+            return record.get("name")
+    return None
+
+
+def _format_post_confirmation_message(
+    *,
+    amount: float,
+    payee_name: str,
+    txn_date: date,
+    category_name: Optional[str],
+    memo: Optional[str],
+) -> str:
+    """Render the human-readable confirmation prompt for a pending post."""
+    direction = "Spend" if amount < 0 else "Receive"
+    cat_part = f" in '{category_name}'" if category_name else " (uncategorized)"
+    memo_part = f" — {memo}" if memo else ""
+    return (
+        f"{direction} ${abs(amount):.2f} to {payee_name} on {txn_date.isoformat()}"
+        f"{cat_part}{memo_part}? Confirm to post."
+    )
+
+
+async def _confirm_create_transaction(
+    ctx: Context,
+    *,
+    amount: float,
+    payee_name: str,
+    txn_date: date,
+    category_name: Optional[str],
+    memo: Optional[str],
+) -> bool:
+    """Elicit a yes/no confirmation; decline, cancel, and ``confirm=False`` all return ``False``."""
+    message = _format_post_confirmation_message(
+        amount=amount,
+        payee_name=payee_name,
+        txn_date=txn_date,
+        category_name=category_name,
+        memo=memo,
+    )
+    result = await ctx.elicit(message=message, schema=_PostConfirmation)
+    if result.action != "accept":
+        return False
+    return bool(result.data.confirm)
+
+
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
 async def create_transaction(
     account_id: str,
@@ -197,9 +256,24 @@ async def create_transaction(
     payee_name: str,
     category_name: Optional[str] = None,
     memo: Optional[str] = None,
+    confirm: Annotated[
+        bool,
+        Field(
+            description=(
+                "When True (default), elicit a yes/no confirmation before posting. "
+                "Set False to skip the prompt in batch flows or trusted automation."
+            )
+        ),
+    ] = True,
     ctx: Optional[Context] = None,
 ) -> Dict[str, Any]:
-    """Create a new transaction in YNAB."""
+    """Create a new transaction in YNAB.
+
+    When ``confirm`` is True and an MCP context is available, the user is
+    asked to confirm the post via ``ctx.elicit``. If the user declines,
+    cancels, or answers no, the call returns ``{"cancelled": True, ...}``
+    without contacting YNAB.
+    """
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
 
@@ -208,11 +282,25 @@ async def create_transaction(
         budget_id = await _s._resolve_budget_id(client, ctx)
 
         category_id = await _resolve_category_id(client, budget_id, category_name, ctx)
+        txn_date = date.today()
+
+        if confirm and ctx is not None:
+            resolved_name = _category_display_name(budget_id, category_id)
+            ok = await _confirm_create_transaction(
+                ctx,
+                amount=amount,
+                payee_name=payee_name,
+                txn_date=txn_date,
+                category_name=resolved_name,
+                memo=memo,
+            )
+            if not ok:
+                return {"cancelled": True, "reason": "user_declined_confirmation"}
 
         # Create transaction data
         transaction = NewTransaction(
             account_id=account_id,
-            date=date.today(),
+            date=txn_date,
             amount=amount_milliunits,
             payee_name=payee_name,
             memo=memo,

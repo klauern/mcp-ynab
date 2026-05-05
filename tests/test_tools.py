@@ -2158,6 +2158,7 @@ async def test_create_transaction_elicits_when_multiple_budgets(
         account_id="acct-1",
         amount=10.0,
         payee_name="Test",
+        confirm=False,
         ctx=ctx,
     )
 
@@ -2408,6 +2409,7 @@ async def test_create_transaction_elicits_category_when_ambiguous(
         amount=12.34,
         payee_name="Trader Joe's",
         category_name="groceries",
+        confirm=False,
         ctx=ctx,
     )
 
@@ -2416,3 +2418,270 @@ async def test_create_transaction_elicits_category_when_ambiguous(
     args, _ = mock_ynab_apis.transactions.create_transaction.call_args
     wrapper = args[1]
     assert wrapper.transaction.category_id == "c-b"
+
+
+# ---------------------------------------------------------------------------
+# qlh.3: confirm-before-post elicitation in create_transaction
+# ---------------------------------------------------------------------------
+
+
+class _QueuedFakeContext:
+    """Fake ``Context`` that returns elicitation results in order — one per call."""
+
+    def __init__(self, results: list[object]) -> None:
+        self._results = list(results)
+        self.calls: list[tuple[str, type]] = []
+
+    async def elicit(self, message: str, schema: type) -> object:
+        self.calls.append((message, schema))
+        if not self._results:
+            raise AssertionError(f"Unexpected extra elicit call: {message!r}")
+        return self._results.pop(0)
+
+
+def _accept_confirm(confirm: bool) -> SimpleNamespace:
+    """Mimic an ``AcceptedElicitation`` for ``_PostConfirmation``."""
+    return SimpleNamespace(action="accept", data=SimpleNamespace(confirm=confirm))
+
+
+def test_format_post_confirmation_message_spend_with_category() -> None:
+    msg = server._format_post_confirmation_message(
+        amount=-12.34,
+        payee_name="Trader Joe's",
+        txn_date=date(2026, 5, 4),
+        category_name="Groceries",
+        memo="weekly run",
+    )
+    assert "Spend" in msg
+    assert "$12.34" in msg
+    assert "Trader Joe's" in msg
+    assert "2026-05-04" in msg
+    assert "'Groceries'" in msg
+    assert "weekly run" in msg
+
+
+def test_format_post_confirmation_message_receive_uncategorized_no_memo() -> None:
+    msg = server._format_post_confirmation_message(
+        amount=50.0,
+        payee_name="Refund Co",
+        txn_date=date(2026, 5, 4),
+        category_name=None,
+        memo=None,
+    )
+    assert msg.startswith("Receive $50.00 to Refund Co")
+    assert "(uncategorized)" in msg
+    # No memo dash artifact when memo is None.
+    assert " — " not in msg
+
+
+def test_category_display_name_finds_cached_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.cache_categories(
+        "b-1",
+        [{"id": "c-x", "name": "Dining Out", "category_group_name": "Food"}],
+    )
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    assert server._category_display_name("b-1", "c-x") == "Dining Out"
+    assert server._category_display_name("b-1", "c-missing") is None
+    assert server._category_display_name("b-1", None) is None
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_skips_confirmation_when_no_ctx(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Default confirm=True still no-ops when ctx is unavailable — posts directly."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(
+        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-1"})
+    )
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=5.0,
+        payee_name="Cafe",
+    )
+
+    assert result == {"id": "t-1"}
+    mock_ynab_apis.transactions.create_transaction.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_skips_confirmation_when_confirm_false(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """confirm=False bypasses the elicit even when ctx is provided."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(
+        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-1"})
+    )
+    ctx = _QueuedFakeContext([])  # would raise if any elicit happened
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=5.0,
+        payee_name="Cafe",
+        confirm=False,
+        ctx=ctx,
+    )
+
+    assert result == {"id": "t-1"}
+    assert ctx.calls == []
+    mock_ynab_apis.transactions.create_transaction.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_posts_after_confirmation_accepted(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """confirm=True with ctx triggers elicit; accept→confirm=True posts."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    isolated.cache_categories(
+        "b-1",
+        [{"id": "c-food", "name": "Groceries", "category_group_name": "Food"}],
+    )
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(
+        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-1"})
+    )
+    ctx = _QueuedFakeContext([_accept_confirm(True)])
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=-12.34,
+        payee_name="Trader Joe's",
+        category_name="Groceries",
+        ctx=ctx,
+    )
+
+    assert result == {"id": "t-1"}
+    mock_ynab_apis.transactions.create_transaction.assert_called_once()
+    # Confirmation prompt mentioned the resolved category and amount.
+    assert len(ctx.calls) == 1
+    confirmation_msg, schema = ctx.calls[0]
+    assert schema is server._PostConfirmation
+    assert "Groceries" in confirmation_msg
+    assert "$12.34" in confirmation_msg
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_returns_cancelled_when_confirm_field_false(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Accept with confirm=False returns cancelled marker; YNAB never called."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    ctx = _QueuedFakeContext([_accept_confirm(False)])
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=10.0,
+        payee_name="Cafe",
+        ctx=ctx,
+    )
+
+    assert result == {"cancelled": True, "reason": "user_declined_confirmation"}
+    mock_ynab_apis.transactions.create_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_returns_cancelled_on_decline(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Decline action returns cancelled marker; YNAB never called."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    ctx = _QueuedFakeContext([SimpleNamespace(action="decline", data=None)])
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=10.0,
+        payee_name="Cafe",
+        ctx=ctx,
+    )
+
+    assert result == {"cancelled": True, "reason": "user_declined_confirmation"}
+    mock_ynab_apis.transactions.create_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_returns_cancelled_on_cancel(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Cancel action returns cancelled marker; YNAB never called."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    ctx = _QueuedFakeContext([SimpleNamespace(action="cancel", data=None)])
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=10.0,
+        payee_name="Cafe",
+        ctx=ctx,
+    )
+
+    assert result == {"cancelled": True, "reason": "user_declined_confirmation"}
+    mock_ynab_apis.transactions.create_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_chains_category_then_confirmation(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """End-to-end: category elicit AND confirmation elicit fire in order, both accepted."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    isolated.cache_categories(
+        "b-1",
+        [
+            {"id": "c-a", "name": "Groceries 🛒", "category_group_name": "Food"},
+            {"id": "c-b", "name": "Groceries (Household)", "category_group_name": "Bills"},
+        ],
+    )
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(
+        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-1", "category_id": "c-b"})
+    )
+    ctx = _QueuedFakeContext([_accept_category(index=2), _accept_confirm(True)])
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=-25.0,
+        payee_name="Target",
+        category_name="groceries",
+        ctx=ctx,
+    )
+
+    assert result == {"id": "t-1", "category_id": "c-b"}
+    schemas = [c[1] for c in ctx.calls]
+    assert schemas == [server._CategoryChoice, server._PostConfirmation]
+    # Confirmation message reflects the *chosen* category, not the user's input.
+    confirm_msg = ctx.calls[1][0]
+    assert "Groceries (Household)" in confirm_msg

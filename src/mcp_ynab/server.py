@@ -178,9 +178,13 @@ from .tools.budgeting import (  # noqa: E402, F401
 )
 from .tools.transactions import (  # noqa: E402, F401
     _CategoryChoice,
+    _PostConfirmation,
+    _category_display_name,
+    _confirm_create_transaction,
     _filter_transactions,
     _find_category_id,
     _find_transaction_by_id,
+    _format_post_confirmation_message,
     _get_transaction_row,
     _resolve_category_id,
     approve_transactions,

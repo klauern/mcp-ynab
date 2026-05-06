@@ -2,15 +2,25 @@
 
 `YNABResources` persists the user's preferred budget id and a per-budget
 category cache under the resolved config directory. `Preferences` is the
-typed Pydantic model for the unified preferences.json file (added in the
-6ha epic; YNABResources will migrate onto it in 6ha.3). JSON helpers
-tolerate missing files (return `{}`) and corrupt files (warn + return
-`{}`) so first-run and recovery paths just work.
+typed Pydantic model for ``preferences.json`` (the 3 user-configurable
+fields). The category cache lives in a separate ``category_cache.json``
+under the same dir, keyed by budget id with `{last_refreshed, records}`
+envelopes so we can answer freshness questions without refetching. JSON
+helpers tolerate missing files (return `{}`) and corrupt files (warn +
+return `{}`) so first-run and recovery paths just work.
+
+A one-shot migration runs on `YNABResources.__init__` if the legacy
+`preferred_budget_id.json` + `budget_category_cache.json` pair exists
+and `preferences.json` does not — fold both into the new layout, then
+unlink the old files. Migrated cache entries get `last_refreshed=None`
+so :meth:`YNABResources.is_cache_stale` returns True on first read,
+forcing a fresh fetch instead of trusting an unknown-age timestamp.
 """
 
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +32,9 @@ from .client import _resolve_config_dir
 logger = logging.getLogger(__name__)
 
 PREFERENCES_FILENAME = "preferences.json"
+CATEGORY_CACHE_FILENAME = "category_cache.json"
+LEGACY_PREFERRED_BUDGET_FILENAME = "preferred_budget_id.json"
+LEGACY_CATEGORY_CACHE_FILENAME = "budget_category_cache.json"
 PREF_ENV_PREFIX = "MCP_YNAB_"
 
 _TRUTHY_STR = frozenset({"1", "true", "yes", "on"})
@@ -139,47 +152,122 @@ def save_preferences(prefs: Preferences, config_dir: Optional[Path] = None) -> N
     _atomic_write_json(path, prefs.model_dump(mode="json"))
 
 
+def _utcnow_iso() -> str:
+    """Timezone-aware UTC ISO-8601 timestamp; one place so tests can monkeypatch it."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 class YNABResources:
-    """File-backed store for user preferences and the budget category cache."""
+    """File-backed store for user preferences and the budget category cache.
+
+    Public API (signatures preserved across the 6ha refactor):
+        - get_preferred_budget_id / set_preferred_budget_id
+        - get_cached_category_records / get_cached_categories / cache_categories
+        - is_cache_stale (new in 6ha.3)
+        - preferences (read/write the typed model)
+    """
 
     def __init__(self, config_dir: Optional[Path] = None):
-        """Initialize and load any persisted state from `config_dir`."""
+        """Resolve ``config_dir``, run one-shot legacy migration, then load state."""
         self._config_dir = _resolve_config_dir(config_dir)
-        self._preferred_budget_id_file = self._config_dir / "preferred_budget_id.json"
-        self._budget_category_cache_file = self._config_dir / "budget_category_cache.json"
-        self._preferred_budget_id: Optional[str] = None
-        self._category_cache: Dict[str, List[Dict[str, Any]]] = {}
-        self._load_data()
+        self._preferences_file = self._config_dir / PREFERENCES_FILENAME
+        self._category_cache_file = self._config_dir / CATEGORY_CACHE_FILENAME
+        self._migrate_legacy_files_if_needed()
+        self._preferences: Preferences = load_preferences(self._config_dir)
+        # On-disk shape: {budget_id: {"last_refreshed": iso8601 | None, "records": [...]}}.
+        self._category_cache: Dict[str, Dict[str, Any]] = _load_json_file(self._category_cache_file)
 
-    def _load_data(self) -> None:
-        """Load data from files."""
-        try:
-            with open(self._preferred_budget_id_file, "r", encoding="utf-8") as f:
-                self._preferred_budget_id = f.read().strip() or None
-        except FileNotFoundError:
-            self._preferred_budget_id = None
+    def _migrate_legacy_files_if_needed(self) -> None:
+        """One-shot lift of legacy files into the new layout. Idempotent.
 
-        self._category_cache = _load_json_file(self._budget_category_cache_file)
+        Skipped entirely when ``preferences.json`` already exists — that's the
+        signal that migration has already run (or never had legacy data to
+        begin with). When migrating: legacy ``preferred_budget_id.json``
+        becomes ``preferences.json[default_budget_id]``; each budget's bare
+        records list becomes ``{last_refreshed: None, records: [...]}`` so
+        :meth:`is_cache_stale` flags it stale on next read instead of
+        trusting an unknown-age timestamp.
+        """
+        if self._preferences_file.exists():
+            return
+        legacy_prefs = self._config_dir / LEGACY_PREFERRED_BUDGET_FILENAME
+        legacy_cache = self._config_dir / LEGACY_CATEGORY_CACHE_FILENAME
+        if not legacy_prefs.exists() and not legacy_cache.exists():
+            return
+
+        migrated_budget_id: Optional[str] = None
+        if legacy_prefs.exists():
+            try:
+                migrated_budget_id = legacy_prefs.read_text(encoding="utf-8").strip() or None
+            except OSError as exc:
+                logger.warning("Failed to read legacy preferred_budget_id: %s", exc)
+
+        save_preferences(
+            Preferences(default_budget_id=migrated_budget_id),
+            config_dir=self._config_dir,
+        )
+
+        if legacy_cache.exists():
+            legacy_records = _load_json_file(legacy_cache)
+            wrapped: Dict[str, Dict[str, Any]] = {
+                budget_id: {"last_refreshed": None, "records": list(records)}
+                for budget_id, records in legacy_records.items()
+            }
+            _atomic_write_json(self._category_cache_file, wrapped)
+
+        for path in (legacy_prefs, legacy_cache):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("Failed to remove legacy file %s: %s", path, exc)
+
+        logger.info("Migrated legacy YNAB resource files to %s", self._preferences_file.name)
+
+    @property
+    def preferences(self) -> Preferences:
+        """Return the in-memory typed preferences (read-only view; use ``save_preferences`` to persist)."""
+        return self._preferences
+
+    def reload_preferences(self) -> Preferences:
+        """Re-read preferences.json from disk. For tests that mutate the file directly."""
+        self._preferences = load_preferences(self._config_dir)
+        return self._preferences
+
+    def update_preferences(self, **fields: Any) -> Preferences:
+        """Validate ``fields``, persist a new Preferences, and return it. Raises on validation error."""
+        merged = self._preferences.model_copy(update=fields)
+        # Re-validate via model_validate to surface ge=0 / type errors that
+        # model_copy alone would silently accept.
+        validated = Preferences.model_validate(merged.model_dump())
+        save_preferences(validated, config_dir=self._config_dir)
+        self._preferences = validated
+        return validated
 
     def get_preferred_budget_id(self) -> Optional[str]:
-        """Get the preferred budget ID."""
-        return self._preferred_budget_id
+        """Get the preferred budget ID (alias for ``preferences.default_budget_id``)."""
+        return self._preferences.default_budget_id
 
     def set_preferred_budget_id(self, budget_id: str) -> None:
-        """Set the preferred budget ID."""
-        self._preferred_budget_id = budget_id
-        with open(self._preferred_budget_id_file, "w", encoding="utf-8") as f:
-            f.write(budget_id)
+        """Set the preferred budget ID and persist preferences.json."""
+        self.update_preferences(default_budget_id=budget_id)
+
+    def _records_for(self, budget_id: str) -> List[Dict[str, Any]]:
+        """Return the bare records list for ``budget_id`` (envelope-aware)."""
+        envelope = self._category_cache.get(budget_id)
+        if not envelope:
+            return []
+        return list(envelope.get("records", []))
 
     def get_cached_category_records(self, budget_id: str) -> List[Dict[str, Any]]:
         """Return raw cached category records ({id, name, group}) for a budget."""
-        return list(self._category_cache.get(budget_id, []))
+        return self._records_for(budget_id)
 
     def get_cached_categories(self, budget_id: str) -> list[types.TextContent]:
         """Get categories from the cache formatted for MCP resources."""
-        cached_categories = self._category_cache.get(budget_id, [])
         contents: list[types.TextContent] = []
-        for cat in cached_categories:
+        for cat in self._records_for(budget_id):
             name = cat.get("name", "Unnamed")
             cat_id = cat.get("id", "N/A")
             group = cat.get("group")
@@ -191,13 +279,50 @@ class YNABResources:
         return contents
 
     def cache_categories(self, budget_id: str, categories: List[Dict[str, Any]]) -> None:
-        """Cache categories for a budget ID."""
-        self._category_cache[budget_id] = [
-            {
-                "id": cat.get("id"),
-                "name": cat.get("name"),
-                "group": cat.get("category_group_name"),
-            }
-            for cat in categories
-        ]
-        _save_json_file(self._budget_category_cache_file, self._category_cache)
+        """Cache categories for a budget ID, stamping ``last_refreshed`` to now."""
+        self._category_cache[budget_id] = {
+            "last_refreshed": _utcnow_iso(),
+            "records": [
+                {
+                    "id": cat.get("id"),
+                    "name": cat.get("name"),
+                    "group": cat.get("category_group_name"),
+                }
+                for cat in categories
+            ],
+        }
+        _atomic_write_json(self._category_cache_file, self._category_cache)
+
+    def get_last_refreshed(self, budget_id: str) -> Optional[datetime]:
+        """Return when ``budget_id`` was last refreshed, or None if never (or no entry)."""
+        envelope = self._category_cache.get(budget_id)
+        if not envelope:
+            return None
+        raw = envelope.get("last_refreshed")
+        if raw is None:
+            return None
+        try:
+            return datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            logger.warning("Unparseable last_refreshed timestamp for %s: %r", budget_id, raw)
+            return None
+
+    def is_cache_stale(self, budget_id: str, ttl_minutes: Optional[int] = None) -> bool:
+        """Return True when the cache for ``budget_id`` is missing or older than ``ttl_minutes``.
+
+        ``ttl_minutes`` defaults to ``preferences.category_cache_ttl_minutes``.
+        Missing entry, ``last_refreshed=None``, or any unparseable timestamp
+        all evaluate as stale — caller should refresh.
+        """
+        if ttl_minutes is None:
+            ttl_minutes = self._preferences.category_cache_ttl_minutes
+        last = self.get_last_refreshed(budget_id)
+        if last is None:
+            return True
+        # `datetime.fromisoformat` returns aware-or-naive matching its input;
+        # we always write tz-aware via _utcnow_iso, so compare against aware now.
+        now = datetime.now(timezone.utc)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        age_minutes = (now - last).total_seconds() / 60
+        return age_minutes > ttl_minutes

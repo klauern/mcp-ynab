@@ -157,20 +157,40 @@ async def set_preferred_budget_id(budget_id: str) -> str:
     return f"Preferred budget ID set to {budget_id}"
 
 
-@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
-async def cache_categories(budget_id: str) -> str:
-    """Cache all categories for a given YNAB budget ID."""
+async def _fetch_and_cache_categories(budget_id: str) -> int:
+    """Fetch categories for ``budget_id`` from YNAB and write the envelope. Returns count."""
     async with await _s.get_ynab_client() as client:
         categories_api = _s.CategoriesApi(client)
         response = categories_api.get_categories(budget_id)
-        groups = response.data.category_groups
-        categories = []
-        for group in groups:
+        categories: list[Any] = []
+        for group in response.data.category_groups:
             if isinstance(group, CategoryGroupWithCategories):
                 categories.extend(group.categories)
-
         _s.ynab_resources.cache_categories(budget_id, [cat.to_dict() for cat in categories])
-        return f"Categories cached for budget ID {budget_id}"
+        return len(categories)
+
+
+@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
+async def cache_categories(budget_id: str) -> str:
+    """Force-fetch and cache categories for a budget id. See also: ``refresh_categories``."""
+    count = await _fetch_and_cache_categories(budget_id)
+    return f"Cached {count} categories for budget ID {budget_id}"
+
+
+@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
+async def refresh_categories(budget_id: str, force: bool = False) -> str:
+    """Refresh the category cache for ``budget_id`` if stale (or always when ``force=True``).
+
+    Staleness is decided by ``preferences.category_cache_ttl_minutes``. When
+    the cache is fresh and ``force=False``, this is a no-op that reports the
+    cached count — cheap to call from a chain of tools that just want to
+    "make sure the cache is warm before I look something up."
+    """
+    if not force and not _s.ynab_resources.is_cache_stale(budget_id):
+        cached = _s.ynab_resources.get_cached_category_records(budget_id)
+        return f"Cache fresh for budget ID {budget_id} ({len(cached)} categories); no refetch."
+    count = await _fetch_and_cache_categories(budget_id)
+    return f"Refreshed {count} categories for budget ID {budget_id}"
 
 
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)

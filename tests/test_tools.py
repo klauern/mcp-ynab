@@ -605,7 +605,10 @@ def test_resource_get_cached_categories_falls_back_when_group_missing(
     # Simulate a legacy cache entry written without the `group` field by
     # poking the internal store directly (cache_categories always writes the
     # field, even if it's None).
-    isolated._category_cache["b-1"] = [{"id": "c-1", "name": "Groceries"}]
+    isolated._category_cache["b-1"] = {
+        "last_refreshed": None,
+        "records": [{"id": "c-1", "name": "Groceries"}],
+    }
     monkeypatch.setattr(server, "ynab_resources", isolated)
 
     contents = server.get_cached_categories("b-1")

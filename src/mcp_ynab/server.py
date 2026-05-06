@@ -172,6 +172,7 @@ from .tools.budgeting import (  # noqa: E402, F401
     merge_payees,
     move_money,
     ping,
+    refresh_categories,
     rename_payee,
     set_preferred_budget_id,
     spending_by_category,

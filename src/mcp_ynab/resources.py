@@ -20,6 +20,15 @@ def get_preferred_budget_id() -> Optional[str]:
     return _s.ynab_resources.get_preferred_budget_id()
 
 
+@_s.mcp.resource("ynab://preferences")
+def get_preferences_resource() -> list[types.TextContent]:
+    """Return all preferences as a markdown table; mirrors the ``get_preferences`` tool."""
+    from .tools.preferences import _format_preferences_markdown
+
+    text = _format_preferences_markdown(_s.ynab_resources.preferences)
+    return [types.TextContent(type="text", text=text)]
+
+
 def _currency_iso(currency_format: object) -> str:
     """Best-effort ISO code extraction from a YNAB CurrencyFormat object."""
     if currency_format is None:

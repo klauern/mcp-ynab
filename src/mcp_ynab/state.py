@@ -67,15 +67,15 @@ def _atomic_write_json(filename: Path, data: Dict[str, Any]) -> None:
     os.replace(tmp, filename)
 
 
-def _parse_env_bool(raw: str, name: str) -> bool:
-    """Parse a bool from an env string. Accepts 1/0, true/false, yes/no, on/off (any case)."""
+def _parse_bool_value(raw: str, name: str) -> bool:
+    """Parse a bool from a string. Accepts 1/0, true/false, yes/no, on/off (any case)."""
     lowered = raw.strip().lower()
     if lowered in _TRUTHY_STR:
         return True
     if lowered in _FALSY_STR:
         return False
     raise ValueError(
-        f"Environment variable {name}={raw!r} is not a recognised boolean. "
+        f"Value {raw!r} for {name} is not a recognised boolean. "
         f"Use one of: {sorted(_TRUTHY_STR | _FALSY_STR)}."
     )
 
@@ -103,6 +103,34 @@ class Preferences(BaseModel):
     )
 
 
+def _is_optional_field(field_name: str) -> bool:
+    """Return True if ``field_name``'s annotation includes None (i.e. ``Optional[...]``)."""
+    annotation = Preferences.model_fields[field_name].annotation
+    return type(None) in getattr(annotation, "__args__", ())
+
+
+def _coerce_field_value(field_name: str, raw: str) -> Any:
+    """Coerce ``raw`` to ``field_name``'s declared type. Raises ValueError on bad input.
+
+    Empty strings are treated as ``None`` for Optional fields (the documented
+    way to clear ``default_budget_id``); empty strings on a required field are
+    a coercion error and surface as such. Used by both the env overlay and the
+    ``set_preference`` MCP tool — keep the bool/int branch logic in one place.
+    """
+    if raw == "" and _is_optional_field(field_name):
+        return None
+
+    annotation = Preferences.model_fields[field_name].annotation
+    if annotation is bool or annotation == Optional[bool]:
+        return _parse_bool_value(raw, field_name)
+    if annotation is int or annotation == Optional[int]:
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise ValueError(f"Value {raw!r} for {field_name} is not an integer.") from exc
+    return raw
+
+
 def _apply_env_overlay(data: Dict[str, Any]) -> Dict[str, Any]:
     """Overlay ``MCP_YNAB_*`` env vars on top of ``data`` (env wins). Returns new dict."""
     merged: Dict[str, Any] = dict(data)
@@ -114,18 +142,11 @@ def _apply_env_overlay(data: Dict[str, Any]) -> Dict[str, Any]:
             # `MCP_YNAB_CONFIRM_BEFORE_POST=` (no value) should not crash the
             # bool parser, and it should not coerce default_budget_id to "".
             continue
-        annotation = Preferences.model_fields[field_name].annotation
-        if annotation is bool or annotation == Optional[bool]:
-            merged[field_name] = _parse_env_bool(raw, env_name)
-        elif annotation is int or annotation == Optional[int]:
-            try:
-                merged[field_name] = int(raw)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Environment variable {env_name}={raw!r} is not an integer."
-                ) from exc
-        else:
-            merged[field_name] = raw
+        try:
+            merged[field_name] = _coerce_field_value(field_name, raw)
+        except ValueError as exc:
+            # Re-raise with the env var name so users see WHERE the bad value came from.
+            raise ValueError(f"Environment variable {env_name}: {exc}") from exc
     return merged
 
 

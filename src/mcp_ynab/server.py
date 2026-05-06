@@ -155,6 +155,7 @@ from .resources import (  # noqa: E402, F401
     get_cached_categories,
     get_current_month_resource,
     get_month_resource,
+    get_preferences_resource,
     get_preferred_budget_id,
     list_accounts_resource,
     list_budgets_resource,
@@ -182,7 +183,9 @@ from .tools.budgeting import (  # noqa: E402, F401
 )
 from .tools.preferences import (  # noqa: E402, F401
     clear_api_key,
+    get_preferences,
     set_api_key,
+    set_preference,
 )
 from .tools.transactions import (  # noqa: E402, F401
     _CategoryChoice,

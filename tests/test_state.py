@@ -292,3 +292,153 @@ def test_update_preferences_validates_and_persists(tmp_path: Path) -> None:
 
     with pytest.raises(Exception):  # ValidationError from pydantic
         resources.update_preferences(category_cache_ttl_minutes=-5)
+
+
+# -- get_preferences / set_preference MCP tools (6ha.4) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_preferences_returns_markdown_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """get_preferences renders a markdown table with all three fields and the configured values."""
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.update_preferences(default_budget_id="b-42", category_cache_ttl_minutes=120)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    text = await server.get_preferences()
+
+    assert "# YNAB MCP Preferences" in text
+    assert "default_budget_id" in text
+    assert "b-42" in text
+    assert "category_cache_ttl_minutes" in text
+    assert "120" in text
+    assert "confirm_before_post" in text
+    assert "True" in text
+
+
+@pytest.mark.asyncio
+async def test_set_preference_updates_int_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A string-typed value is coerced to int and persisted via update_preferences."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    result = await server.set_preference("category_cache_ttl_minutes", "30")
+
+    assert "30" in result
+    assert isolated.preferences.category_cache_ttl_minutes == 30
+    assert _read_json(tmp_path / PREFERENCES_FILENAME)["category_cache_ttl_minutes"] == 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("false", False),
+        ("FALSE", False),
+        ("0", False),
+        ("no", False),
+        ("off", False),
+        ("true", True),
+        ("YES", True),
+        ("on", True),
+        ("1", True),
+    ],
+)
+async def test_set_preference_bool_grammar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+) -> None:
+    """The bool grammar accepted by env vars must apply to set_preference too."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    await server.set_preference("confirm_before_post", raw)
+
+    assert isolated.preferences.confirm_before_post is expected
+
+
+@pytest.mark.asyncio
+async def test_set_preference_empty_string_clears_default_budget_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty string for an Optional field is the documented way to clear it; stored as None."""
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.update_preferences(default_budget_id="b-1")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    await server.set_preference("default_budget_id", "")
+
+    assert isolated.preferences.default_budget_id is None
+    assert _read_json(tmp_path / PREFERENCES_FILENAME)["default_budget_id"] is None
+    # Round-trip through get_preferences so a future formatter change can't
+    # quietly start rendering None as the literal string "None".
+    rendered = await server.get_preferences()
+    assert "None" not in rendered.replace("Name", "").replace("# YNAB MCP Preferences", "")
+
+
+@pytest.mark.asyncio
+async def test_set_preference_unknown_name_raises_with_field_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A typo in the name surfaces immediately with the valid set listed."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    with pytest.raises(ValueError, match="Unknown preference"):
+        await server.set_preference("default_budget_id_typo", "b-1")
+
+
+@pytest.mark.asyncio
+async def test_set_preference_bad_int_value_names_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Coercion errors mention the field, not 'environment variable'."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    with pytest.raises(ValueError, match="category_cache_ttl_minutes"):
+        await server.set_preference("category_cache_ttl_minutes", "abc")
+
+
+@pytest.mark.asyncio
+async def test_set_preference_negative_int_blocked_by_validator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ge=0 on the model rejects -5 even though int('-5') is valid."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    with pytest.raises(Exception):  # ValidationError
+        await server.set_preference("category_cache_ttl_minutes", "-5")
+
+
+def test_preferences_resource_renders_same_as_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ynab://preferences resource and get_preferences tool must agree byte-for-byte."""
+    from mcp_ynab.tools.preferences import _format_preferences_markdown
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.update_preferences(default_budget_id="b-99")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    contents = server.get_preferences_resource()
+    assert len(contents) == 1
+    expected = _format_preferences_markdown(isolated.preferences)
+    assert contents[0].text == expected
+    assert "b-99" in contents[0].text
+
+
+def test_get_preferred_budget_id_resource_still_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new ynab://preferences resource must not collide with ynab://preferences/budget_id."""
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-77")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    assert server.get_preferred_budget_id() == "b-77"
+    contents = server.get_preferences_resource()
+    assert "b-77" in contents[0].text

@@ -24,7 +24,7 @@ dependencies = [
   "mcp[cli]>=1.20.0,<2.0.0",
   "pydantic>=2.10.0,<3",
   "ynab>=1.0.1,<2.0.0",
-  "python-dotenv>=1.0.0",
+  "python-dotenv>=1.2.2",
   "keyring>=25.7.0",
 ]
 
@@ -45,7 +45,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-  "pytest>=8.3.4",
+  "pytest>=9.0.3",
   "pytest-asyncio>=0.25.3",
   "pytest-cov>=6.0.0",
   "ruff>=0.9.4",

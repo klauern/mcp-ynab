@@ -146,12 +146,14 @@ async def _resolve_budget_id(client: ApiClient, ctx: Optional[Context]) -> str:
 # are bound above so the submodules can resolve them via `server.<name>`.
 from . import prompts  # noqa: E402, F401
 from . import resources  # noqa: E402, F401
-from .tools import budgeting, preferences, transactions  # noqa: E402, F401
+from .tools import budgeting, code_mode, preferences, transactions  # noqa: E402, F401
 
 # Re-export tool and resource callables so `server.<tool>(...)` works for
 # tests and downstream code. The decorators above are what register the
 # tools with `mcp`; these imports just bind the names on the server module.
 from .resources import (  # noqa: E402, F401
+    get_code_mode_examples,
+    get_code_mode_stubs,
     get_cached_categories,
     get_current_month_resource,
     get_month_resource,
@@ -187,6 +189,7 @@ from .tools.preferences import (  # noqa: E402, F401
     set_api_key,
     set_preference,
 )
+from .tools.code_mode import ynab_code_execute  # noqa: E402, F401
 from .tools.transactions import (  # noqa: E402, F401
     _CategoryChoice,
     _PostConfirmation,
@@ -219,3 +222,45 @@ from .prompts import (  # noqa: E402, F401
     spending_by_payee,
     weekly_review,
 )
+
+_CODE_MODE_REPLACEMENT_VISIBLE_TOOLS = frozenset(
+    {
+        "clear_api_key",
+        "get_budgets",
+        "get_preferences",
+        "ping",
+        "set_api_key",
+        "set_preference",
+        "set_preferred_budget_id",
+        "ynab_code_execute",
+    }
+)
+_list_tools_without_code_mode_filter = mcp.list_tools
+_call_tool_without_code_mode_filter = mcp.call_tool
+
+
+def _code_mode_replacement_enabled() -> bool:
+    """Return whether the external tool surface should be filtered."""
+    return bool(ynab_resources.preferences.code_mode_replace_tools)
+
+
+async def _list_tools_with_code_mode_filter():
+    """List tools, optionally hiding direct tools from the external MCP surface."""
+    tools = await _list_tools_without_code_mode_filter()
+    if not _code_mode_replacement_enabled():
+        return tools
+    return [tool for tool in tools if tool.name in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS]
+
+
+async def _call_tool_with_code_mode_filter(name: str, arguments: dict):
+    """Reject direct calls to hidden tools while preserving the internal registry."""
+    if _code_mode_replacement_enabled() and name not in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS:
+        raise ValueError(
+            f"Tool {name!r} is hidden because code_mode_replace_tools is enabled. "
+            "Use ynab_code_execute instead."
+        )
+    return await _call_tool_without_code_mode_filter(name, arguments)
+
+
+mcp.list_tools = _list_tools_with_code_mode_filter
+mcp.call_tool = _call_tool_with_code_mode_filter

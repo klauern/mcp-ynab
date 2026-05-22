@@ -23,6 +23,11 @@ def test_preferences_defaults_are_documented_constants() -> None:
     assert prefs.default_budget_id is None
     assert prefs.category_cache_ttl_minutes == 10080  # 7 days
     assert prefs.confirm_before_post is True
+    assert prefs.code_mode_enabled is False
+    assert prefs.code_mode_mutations_enabled is False
+    assert prefs.code_mode_replace_tools is False
+    assert prefs.code_mode_timeout_s == 10.0
+    assert prefs.code_mode_max_output_chars == 8192
 
 
 def test_load_preferences_returns_defaults_when_file_missing(tmp_path: Path) -> None:
@@ -120,6 +125,15 @@ def test_env_int_rejects_non_integer(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setenv(f"{PREF_ENV_PREFIX}CATEGORY_CACHE_TTL_MINUTES", "soon")
     with pytest.raises(ValueError, match="CATEGORY_CACHE_TTL_MINUTES"):
         load_preferences(config_dir=tmp_path)
+
+
+def test_env_float_parses_for_code_mode_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(f"{PREF_ENV_PREFIX}CODE_MODE_TIMEOUT_S", "2.5")
+    prefs = load_preferences(config_dir=tmp_path)
+    assert prefs.code_mode_timeout_s == 2.5
 
 
 def test_empty_env_var_is_treated_as_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

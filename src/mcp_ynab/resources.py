@@ -5,11 +5,13 @@ attribute lookup on the `server` module so tests that do
 `monkeypatch.setattr(server, "ynab_resources", ...)` propagate correctly.
 """
 
+from pathlib import Path
 from typing import Optional
 
 import mcp.types as types
 
 from . import server as _s
+from .code_mode import generate_stubs
 from .formatters import _build_markdown_table, _format_dollar_amount, _render_month_markdown
 from .tools.budgeting import _resolve_month
 
@@ -27,6 +29,36 @@ def get_preferences_resource() -> list[types.TextContent]:
 
     text = _format_preferences_markdown(_s.ynab_resources.preferences)
     return [types.TextContent(type="text", text=text)]
+
+
+@_s.mcp.resource("ynab://code-mode/stubs")
+def get_code_mode_stubs() -> list[types.TextContent]:
+    """Return Python type stubs for the current Code Mode namespace."""
+    text = generate_stubs(
+        _s.mcp,
+        mutations_enabled=_s.ynab_resources.preferences.code_mode_mutations_enabled,
+    )
+    return [types.TextContent(type="text", text=text)]
+
+
+@_s.mcp.resource("ynab://code-mode/examples")
+def get_code_mode_examples() -> list[types.TextContent]:
+    """Return curated examples for the Python Code Mode runner."""
+    examples = _read_code_mode_examples()
+    return [types.TextContent(type="text", text=examples)]
+
+
+def _read_code_mode_examples() -> str:
+    candidates = [
+        Path(__file__).resolve().parents[2] / "docs" / "code-mode-examples.md",
+        Path.cwd() / "docs" / "code-mode-examples.md",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+
+    searched = ", ".join(str(path) for path in candidates)
+    raise RuntimeError(f"Code Mode examples file not found; searched: {searched}")
 
 
 def _currency_iso(currency_format: object) -> str:

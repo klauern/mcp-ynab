@@ -1,9 +1,11 @@
 from __future__ import annotations
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import mcp_ynab.server as server
+from mcp_ynab.state import Preferences
 
 
 def test_format_accounts_output_groups_and_summary() -> None:
@@ -154,7 +156,61 @@ async def test_resource_and_templates_are_exposed() -> None:
     templates = await server.mcp.list_resource_templates()
 
     assert any(str(r.uri) == "ynab://preferences/budget_id" for r in resources)
+    assert any(str(r.uri) == "ynab://code-mode/stubs" for r in resources)
+    assert any(str(r.uri) == "ynab://code-mode/examples" for r in resources)
     assert any(t.uriTemplate == "ynab://categories/{budget_id}" for t in templates)
+
+
+@pytest.mark.asyncio
+async def test_code_mode_tool_registered() -> None:
+    tools = {tool.name: tool for tool in await server.mcp.list_tools()}
+    assert "ynab_code_execute" in tools
+    assert tools["ynab_code_execute"].annotations.readOnlyHint is False
+
+
+@pytest.mark.asyncio
+async def test_code_mode_replace_tools_filters_external_tool_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=True)),
+    )
+
+    names = {tool.name for tool in await server.mcp.list_tools()}
+
+    assert "ynab_code_execute" in names
+    assert "get_budgets" in names
+    assert "ping" in names
+    assert "set_preference" in names
+    assert "get_transactions" not in names
+    assert "bulk_categorize" not in names
+
+
+@pytest.mark.asyncio
+async def test_code_mode_replace_tools_rejects_direct_hidden_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=True)),
+    )
+
+    with pytest.raises(ValueError, match="code_mode_replace_tools"):
+        await server.mcp.call_tool("get_transactions", {})
+
+
+def test_code_mode_examples_resource_uses_current_namespaces() -> None:
+    content = server.get_code_mode_examples()
+    assert len(content) == 1
+
+    text = content[0].text
+    assert len(text.strip()) > 500
+    assert "ynab.read.get_budgets" in text
+    assert "ynab.read.get_transactions_needing_attention" in text
+    assert "ynab.write.bulk_categorize" in text
 
 
 def test_find_transaction_by_id_variants() -> None:

@@ -27,15 +27,16 @@ def _format_param(param: inspect.Parameter) -> str:
 def _format_tool_stub(tool: Any) -> list[str]:
     sig = inspect.signature(tool.fn)
     params = [_format_param(param) for param in sig.parameters.values() if param.name != "ctx"]
+    method_params = ", ".join(["self", *params])
     return_type = _annotation_name(sig.return_annotation)
     description = (tool.description or "").replace('"""', '\\"\\"\\"').strip()
     if description:
         return [
-            f"    async def {tool.name}({', '.join(params)}) -> {return_type}:",
+            f"    async def {tool.name}({method_params}) -> {return_type}:",
             f'        """{description}"""',
             "        ...",
         ]
-    return [f"    async def {tool.name}({', '.join(params)}) -> {return_type}: ..."]
+    return [f"    async def {tool.name}({method_params}) -> {return_type}: ..."]
 
 
 def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:

@@ -119,7 +119,7 @@ async def test_run_code_truncates_stdout() -> None:
     result = await run_code('print("abcdef")\nreturn 1', mcp=_mcp(), max_output_chars=5)
     assert result.ok is True
     assert result.truncated is True
-    assert "truncated" in result.logs
+    assert len(result.logs) == 5
 
 
 @pytest.mark.asyncio
@@ -137,14 +137,15 @@ async def test_run_code_truncates_large_result() -> None:
     assert result.result["message"] == "result exceeded 80 characters and was truncated"
     assert result.result["preview"].startswith('{"items": [0, 1, 2')
     assert result.result["preview"].endswith("[... truncated]")
+    assert len(result.result["preview"]) == 80
 
 
 def test_generate_stubs_splits_read_and_write_namespaces() -> None:
     stubs = generate_stubs(_mcp())
     assert "class ReadNamespace" in stubs
-    assert "async def echo" in stubs
+    assert "async def echo(self, value: str)" in stubs
     assert "class WriteNamespace" in stubs
-    assert "async def mutate" in stubs
+    assert "async def mutate(self)" in stubs
 
 
 @pytest.mark.asyncio
@@ -191,3 +192,26 @@ async def test_ynab_code_execute_caps_requested_timeout(
     assert result == {"ok": True, "mode": "json"}
     assert captured["timeout_s"] == 3.0
     assert captured["max_output_chars"] == 50
+
+
+@pytest.mark.asyncio
+async def test_ynab_code_execute_clamps_non_positive_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_run_code(*args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return SimpleNamespace(model_dump=lambda mode: {"ok": True})
+
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_enabled=True)),
+    )
+    monkeypatch.setattr("mcp_ynab.tools.code_mode.run_code", fake_run_code)
+
+    result = await server.ynab_code_execute("return 1", timeout=0)
+
+    assert result == {"ok": True}
+    assert captured["timeout_s"] == 0.1

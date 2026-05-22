@@ -213,6 +213,23 @@ def test_code_mode_examples_resource_uses_current_namespaces() -> None:
     assert "ynab.write.bulk_categorize" in text
 
 
+def test_code_mode_examples_missing_file_raises_specific_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_is_file = Path.is_file
+    monkeypatch.setattr(server.resources.Path, "cwd", lambda: Path("/missing-cwd"))
+    monkeypatch.setattr(
+        server.resources.Path,
+        "is_file",
+        lambda self: False
+        if str(self).endswith("code-mode-examples.md")
+        else original_is_file(self),
+    )
+
+    with pytest.raises(FileNotFoundError, match="Code Mode examples file not found"):
+        server.resources._read_code_mode_examples()
+
+
 def test_find_transaction_by_id_variants() -> None:
     class Txn:
         def __init__(self) -> None:

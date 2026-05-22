@@ -84,7 +84,7 @@ def _truncate(text: str, max_chars: int) -> tuple[str, bool]:
         return text, False
     suffix = "\n[... truncated]"
     keep = max(0, max_chars - len(suffix))
-    return text[:keep] + suffix, True
+    return (text[:keep] + suffix)[:max_chars], True
 
 
 def _serialize_result(result: Any) -> str:

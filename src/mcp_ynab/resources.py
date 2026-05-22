@@ -58,7 +58,7 @@ def _read_code_mode_examples() -> str:
             return path.read_text(encoding="utf-8")
 
     searched = ", ".join(str(path) for path in candidates)
-    raise RuntimeError(f"Code Mode examples file not found; searched: {searched}")
+    raise FileNotFoundError(f"Code Mode examples file not found; searched: {searched}")
 
 
 def _currency_iso(currency_format: object) -> str:

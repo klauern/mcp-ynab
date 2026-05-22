@@ -35,7 +35,7 @@ async def ynab_code_execute(
 
     timeout_s = prefs.code_mode_timeout_s
     if timeout is not None:
-        timeout_s = min(timeout, prefs.code_mode_timeout_s)
+        timeout_s = min(max(timeout, 0.1), prefs.code_mode_timeout_s)
 
     result = await run_code(
         code,

@@ -1,6 +1,6 @@
 # YNAB Code Mode Examples
 
-These snippets are bodies for `ynab_code_execute`. Code Mode exposes a gated
+These snippets are bodies for `execute`. Code Mode exposes a gated
 Python namespace:
 
 - `ynab.read.*` is available when `code_mode_enabled=true`.

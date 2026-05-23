@@ -27,6 +27,36 @@ export YNAB_API_KEY=your-personal-access-token
 
 Get a token at <https://app.ynab.com/settings/developer>.
 
+## Quickstart
+
+### 1. Set your API key
+Code Mode is the default surface — it requires your YNAB API key:
+```bash
+export YNAB_API_KEY="your-key-here"
+```
+Or store it in your OS keychain (the server reads it automatically).
+
+### 2. Use Code Mode
+By default the server exposes two tools: **`search`** (discover available operations) and **`execute`** (run a snippet against the live YNAB API).
+
+**Discover tools:**
+```python
+# In the search tool:
+return [t for t in spec if "transaction" in t["name"]]
+```
+
+**Execute a query:**
+```python
+# In the execute tool:
+return await ynab.read.get_budgets()
+```
+
+### 3. Restore the full tool surface (optional)
+To access all ~34 direct YNAB tools, set the escape-hatch preference:
+```
+set_preference: code_mode_replace_tools = false
+```
+
 ## Run the server
 
 ```bash
@@ -67,10 +97,9 @@ The server exposes the following over MCP:
 
 ## Code Mode
 
-Code Mode exposes `ynab_code_execute`, an opt-in Python execution tool for
-multi-step YNAB workflows. It is disabled by default and controlled through the
-preferences `code_mode_enabled`, `code_mode_mutations_enabled`, and
-`code_mode_replace_tools`.
+Code Mode exposes `execute`, a Python execution tool for multi-step YNAB
+workflows. It is enabled by default and controlled through the preferences
+`code_mode_enabled`, `code_mode_mutations_enabled`, and `code_mode_replace_tools`.
 
 See [src/mcp_ynab/code_mode/README.md](src/mcp_ynab/code_mode/README.md)
 for usage, wiring instructions, and runner limits.

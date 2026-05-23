@@ -189,7 +189,7 @@ from .tools.preferences import (  # noqa: E402, F401
     set_api_key,
     set_preference,
 )
-from .tools.code_mode import ynab_code_execute  # noqa: E402, F401
+from .tools.code_mode import execute, search  # noqa: E402, F401
 from .tools.transactions import (  # noqa: E402, F401
     _CategoryChoice,
     _PostConfirmation,
@@ -223,18 +223,7 @@ from .prompts import (  # noqa: E402, F401
     weekly_review,
 )
 
-_CODE_MODE_REPLACEMENT_VISIBLE_TOOLS = frozenset(
-    {
-        "clear_api_key",
-        "get_budgets",
-        "get_preferences",
-        "ping",
-        "set_api_key",
-        "set_preference",
-        "set_preferred_budget_id",
-        "ynab_code_execute",
-    }
-)
+_CODE_MODE_REPLACEMENT_VISIBLE_TOOLS = frozenset({"search", "execute"})
 _list_tools_without_code_mode_filter = mcp.list_tools
 _call_tool_without_code_mode_filter = mcp.call_tool
 
@@ -257,7 +246,7 @@ async def _call_tool_with_code_mode_filter(name: str, arguments: dict):
     if _code_mode_replacement_enabled() and name not in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS:
         raise ValueError(
             f"Tool {name!r} is hidden because code_mode_replace_tools is enabled. "
-            "Use ynab_code_execute instead."
+            "Use execute instead."
         )
     return await _call_tool_without_code_mode_filter(name, arguments)
 

@@ -1,6 +1,6 @@
 # YNAB Code Mode
 
-Code Mode lets an MCP client call one tool, `ynab_code_execute`, with a short
+Code Mode lets an MCP client call one tool, `execute`, with a short
 Python snippet instead of chaining many YNAB tools manually. The snippet runs as
 the body of an async function and receives a small `ynab` namespace:
 
@@ -12,15 +12,16 @@ Code Mode is opt-in. It is useful for multi-step read, cleanup, and batch
 workflows where the agent needs loops, filtering, grouping, or conditional
 updates.
 
-## Enable it
+## Configure it
 
-Use the existing `set_preference` MCP tool:
+Code Mode is enabled by default. If you need to disable it or customize its behavior,
+use the `set_preference` MCP tool:
 
 ```text
-set_preference(name="code_mode_enabled", value="true")
+set_preference(name="code_mode_enabled", value="false")
 ```
 
-That enables read-only snippets. Mutating snippets require a separate opt-in:
+To enable read-only snippets (default when enabled): Mutating snippets require a separate opt-in:
 
 ```text
 set_preference(name="code_mode_mutations_enabled", value="true")
@@ -33,7 +34,7 @@ set_preference(name="code_mode_replace_tools", value="true")
 ```
 
 When `code_mode_replace_tools` is true, the public MCP tool list keeps only the
-bootstrap tools plus `ynab_code_execute`. The internal registry is still present
+bootstrap tools plus `search` and `execute`. The internal registry is still present
 so Code Mode can call the underlying tools.
 
 Related preferences:
@@ -53,11 +54,11 @@ Clients should read these resources before generating snippets:
 
 The stubs are generated from the FastMCP tool registry. If a new tool is added
 and registered with the server, it appears automatically in the relevant
-namespace unless it is `ynab_code_execute` itself.
+namespace unless it is `execute` itself.
 
 ## Write snippets
 
-Pass only the function body to `ynab_code_execute`. Use `await` directly and
+Pass only the function body to `execute`. Use `await` directly and
 return JSON-serializable values when possible:
 
 ```python
@@ -84,7 +85,7 @@ The tool returns a structured dictionary:
 }
 ```
 
-If Code Mode is disabled, `ynab_code_execute` returns `ok=false` with
+If Code Mode is disabled, `execute` returns `ok=false` with
 `error="code_mode_disabled"`. If a snippet calls `ynab.write.*` while mutation
 mode is disabled, it returns `ok=false` with `error="mutations_disabled"`.
 
@@ -112,7 +113,7 @@ A client that prefers Code Mode should:
 2. Optionally read `ynab://code-mode/examples` for local prompting examples.
 3. Generate a Python function body that uses only `ynab.read.*` unless the user
    has explicitly approved mutation mode.
-4. Call `ynab_code_execute(code=...)`.
+4. Call `execute(code=...)`.
 5. Inspect `ok`, `error`, `logs`, and `truncated` before acting on `result`.
 
 For write workflows, first do a read-only discovery snippet and show the planned

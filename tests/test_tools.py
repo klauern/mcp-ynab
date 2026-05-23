@@ -20,6 +20,7 @@ from ynab.models.transaction_detail import TransactionDetail
 from ynab.rest import ApiException
 
 from mcp_ynab import server
+from mcp_ynab.state import Preferences
 
 
 # ---------------------------------------------------------------------------
@@ -441,10 +442,16 @@ async def test_needs_attention_returns_friendly_message_when_nothing_to_show(
 @pytest.mark.asyncio
 async def test_needs_attention_rejects_invalid_filter_type_via_mcp_layer(
     mock_ynab_apis: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pydantic-via-FastMCP rejects out-of-Literal values before the tool runs."""
     from mcp.server.fastmcp.exceptions import ToolError
 
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=False)),
+    )
     with pytest.raises(ToolError) as exc_info:
         await server.mcp.call_tool(
             "get_transactions_needing_attention",

@@ -7,7 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 import mcp_ynab.server as server
-from mcp_ynab.code_mode import generate_stubs, run_code
+from mcp_ynab.code_mode import build_spec, generate_stubs, run_code, run_search
 from mcp_ynab.state import Preferences
 
 
@@ -149,8 +149,58 @@ def test_generate_stubs_splits_read_and_write_namespaces() -> None:
     assert "async def mutate(self)" in stubs
 
 
+def test_build_spec_returns_catalog_entries() -> None:
+    entries = build_spec(_mcp())
+    assert len(entries) == 2
+    names = {e["name"] for e in entries}
+    assert names == {"echo", "mutate"}
+    echo_entry = next(e for e in entries if e["name"] == "echo")
+    assert echo_entry["namespace"] == "read"
+    assert "value" in echo_entry["signature"]
+    assert echo_entry["returns"] != ""
+    mutate_entry = next(e for e in entries if e["name"] == "mutate")
+    assert mutate_entry["namespace"] == "write"
+
+
+def test_build_spec_omits_write_tools_when_mutations_disabled() -> None:
+    entries = build_spec(_mcp(), mutations_enabled=False)
+    namespaces = {e["namespace"] for e in entries}
+    assert "write" not in namespaces
+
+
 @pytest.mark.asyncio
-async def test_ynab_code_execute_requires_preference_enabled(
+async def test_run_search_filters_spec_with_snippet() -> None:
+    spec = build_spec(_mcp())
+    result = await run_search(
+        'return [t for t in spec if t["namespace"] == "read"]',
+        spec=spec,
+    )
+    assert result.ok is True
+    assert isinstance(result.result, list)
+    assert all(e["namespace"] == "read" for e in result.result)
+
+
+@pytest.mark.asyncio
+async def test_run_search_has_no_ynab_access() -> None:
+    spec = build_spec(_mcp())
+    result = await run_search("return ynab.read.echo(value='x')", spec=spec)
+    assert result.ok is False
+    assert "ynab" in result.error or result.error is not None
+
+
+@pytest.mark.asyncio
+async def test_run_search_disabled_code_mode_check_is_at_tool_layer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # run_search itself has no code_mode_enabled gate — gating lives in the MCP tool layer.
+    # Verify it runs even with an empty spec.
+    result = await run_search("return len(spec)", spec=[])
+    assert result.ok is True
+    assert result.result == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_requires_preference_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -159,14 +209,14 @@ async def test_ynab_code_execute_requires_preference_enabled(
         SimpleNamespace(preferences=Preferences(code_mode_enabled=False)),
     )
 
-    result = await server.ynab_code_execute("return 1")
+    result = await server.execute("return 1")
 
     assert result["ok"] is False
     assert result["error"] == "code_mode_disabled"
 
 
 @pytest.mark.asyncio
-async def test_ynab_code_execute_caps_requested_timeout(
+async def test_execute_caps_requested_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -188,7 +238,7 @@ async def test_ynab_code_execute_caps_requested_timeout(
     )
     monkeypatch.setattr("mcp_ynab.tools.code_mode.run_code", fake_run_code)
 
-    result = await server.ynab_code_execute("return 1", timeout=10.0)
+    result = await server.execute("return 1", timeout=10.0)
 
     assert result == {"ok": True, "mode": "json"}
     assert captured["timeout_s"] == 3.0
@@ -196,7 +246,7 @@ async def test_ynab_code_execute_caps_requested_timeout(
 
 
 @pytest.mark.asyncio
-async def test_ynab_code_execute_clamps_non_positive_timeout(
+async def test_execute_clamps_non_positive_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -212,7 +262,7 @@ async def test_ynab_code_execute_clamps_non_positive_timeout(
     )
     monkeypatch.setattr("mcp_ynab.tools.code_mode.run_code", fake_run_code)
 
-    result = await server.ynab_code_execute("return 1", timeout=0)
+    result = await server.execute("return 1", timeout=0)
 
     assert result == {"ok": True}
     assert captured["timeout_s"] == 0.1

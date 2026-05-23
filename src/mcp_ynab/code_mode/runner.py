@@ -60,7 +60,7 @@ SAFE_BUILTINS = {
 
 
 class CodeModeResult(BaseModel):
-    """Structured result returned by ``ynab_code_execute``."""
+    """Structured result returned by ``execute``."""
 
     ok: bool
     result: Any = None
@@ -220,7 +220,7 @@ def _build_ynab_proxy(mcp: Any, ctx: Any, *, mutations_enabled: bool) -> SimpleN
     read = SimpleNamespace()
     write = SimpleNamespace()
     for name, tool in mcp._tool_manager._tools.items():
-        if name == "ynab_code_execute":
+        if name in {"execute", "search"}:
             continue
         target = write if _is_mutating_tool(tool) else read
         setattr(target, name, _bind_tool(tool, ctx))
@@ -240,28 +240,22 @@ def _wrap_code(code: str) -> str:
     return f"async def __main__():\n{indented}\n"
 
 
-async def run_code(
+async def _run_snippet(
     code: str,
+    extra_globals: dict[str, Any],
     *,
-    mcp: Any,
-    ctx: Any = None,
-    mutations_enabled: bool = False,
-    timeout_s: float = 10.0,
-    max_output_chars: int = 8192,
+    mutations_enabled: bool,
+    timeout_s: float,
+    max_output_chars: int,
+    filename: str = "<ynab-code-mode>",
 ) -> CodeModeResult:
-    """Audit and execute ``code`` as the body of an async ``__main__`` function."""
-
     logs_buffer = _BoundedStringIO(max_output_chars)
     try:
         wrapped_code = _wrap_code(code)
         _audit_code(wrapped_code, mutations_enabled=mutations_enabled)
-        sandbox_globals = {
-            "__builtins__": SAFE_BUILTINS,
-            "LIMIT": 100,
-            "ynab": _build_ynab_proxy(mcp, ctx, mutations_enabled=mutations_enabled),
-        }
-        compiled = compile(wrapped_code, "<ynab-code-mode>", "exec")
-        exec(compiled, sandbox_globals, sandbox_globals)
+        sandbox_globals = {"__builtins__": SAFE_BUILTINS, "LIMIT": 100, **extra_globals}
+        compiled = compile(wrapped_code, filename, "exec")
+        exec(compiled, sandbox_globals, sandbox_globals)  # noqa: S102
         main = sandbox_globals["__main__"]
         with contextlib.redirect_stdout(logs_buffer):
             # Soft timeout: cannot interrupt synchronous blocking code. See mcp-ynab-fkv.
@@ -289,3 +283,40 @@ async def run_code(
             traceback=traceback_module.format_exc(),
             truncated=truncated,
         )
+
+
+async def run_code(
+    code: str,
+    *,
+    mcp: Any,
+    ctx: Any = None,
+    mutations_enabled: bool = False,
+    timeout_s: float = 10.0,
+    max_output_chars: int = 8192,
+) -> CodeModeResult:
+    """Audit and execute ``code`` as the body of an async ``__main__`` function."""
+    return await _run_snippet(
+        code,
+        {"ynab": _build_ynab_proxy(mcp, ctx, mutations_enabled=mutations_enabled)},
+        mutations_enabled=mutations_enabled,
+        timeout_s=timeout_s,
+        max_output_chars=max_output_chars,
+    )
+
+
+async def run_search(
+    code: str,
+    *,
+    spec: list[dict],
+    timeout_s: float = 10.0,
+    max_output_chars: int = 8192,
+) -> CodeModeResult:
+    """Audit and execute ``code`` against a spec catalog (no live YNAB API access)."""
+    return await _run_snippet(
+        code,
+        {"spec": spec},
+        mutations_enabled=True,  # no ynab namespace; mutation check is irrelevant
+        timeout_s=timeout_s,
+        max_output_chars=max_output_chars,
+        filename="<ynab-search>",
+    )

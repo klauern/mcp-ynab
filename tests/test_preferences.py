@@ -23,9 +23,9 @@ def test_preferences_defaults_are_documented_constants() -> None:
     assert prefs.default_budget_id is None
     assert prefs.category_cache_ttl_minutes == 10080  # 7 days
     assert prefs.confirm_before_post is True
-    assert prefs.code_mode_enabled is False
+    assert prefs.code_mode_enabled is True
     assert prefs.code_mode_mutations_enabled is False
-    assert prefs.code_mode_replace_tools is False
+    assert prefs.code_mode_replace_tools is True
     assert prefs.code_mode_timeout_s == 10.0
     assert prefs.code_mode_max_output_chars == 8192
 

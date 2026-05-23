@@ -102,16 +102,19 @@ class Preferences(BaseModel):
         description="Whether mutating tools must elicit a confirmation before posting.",
     )
     code_mode_enabled: bool = Field(
-        default=False,
-        description="Whether the read-only Code Mode execute tool is enabled.",
+        default=True,
+        description="Whether the Code Mode search and execute tools are enabled.",
     )
     code_mode_mutations_enabled: bool = Field(
         default=False,
         description="Whether Code Mode may call mutating YNAB helpers.",
     )
     code_mode_replace_tools: bool = Field(
-        default=False,
-        description="Reserved transition switch for replacing direct tools with Code Mode.",
+        default=True,
+        description=(
+            "When True (default), only search and execute are exposed as tools. "
+            "Set False to restore the full direct-tool surface (escape hatch)."
+        ),
     )
     code_mode_timeout_s: float = Field(
         default=10.0,

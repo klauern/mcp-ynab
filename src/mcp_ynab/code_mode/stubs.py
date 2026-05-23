@@ -51,7 +51,7 @@ def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:
     read_lines: list[str] = []
     write_lines: list[str] = []
     for name, tool in _iter_mcp_tools(mcp):
-        if name == "ynab_code_execute":
+        if name in {"execute", "search"}:
             continue
         target = write_lines if _is_mutating_tool(tool) else read_lines
         target.extend(_format_tool_stub(tool))
@@ -72,3 +72,26 @@ def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def build_spec(mcp: Any, *, mutations_enabled: bool = True) -> list[dict]:
+    """Return a structured catalog of available tools for the search sandbox."""
+    entries = []
+    for name, tool in _iter_mcp_tools(mcp):
+        if name in {"execute", "search"}:
+            continue
+        namespace = "write" if _is_mutating_tool(tool) else "read"
+        if not mutations_enabled and namespace == "write":
+            continue
+        sig = inspect.signature(tool.fn)
+        params = [_format_param(p) for p in sig.parameters.values() if p.name != "ctx"]
+        entries.append(
+            {
+                "name": name,
+                "namespace": namespace,
+                "signature": ", ".join(params),
+                "doc": (tool.description or "").strip(),
+                "returns": _annotation_name(sig.return_annotation),
+            }
+        )
+    return entries

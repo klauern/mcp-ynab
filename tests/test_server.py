@@ -42,7 +42,14 @@ def test_build_markdown_table_empty_rows() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tools_register_categorize_transaction_not_private_helper() -> None:
+async def test_tools_register_categorize_transaction_not_private_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=False)),
+    )
     tools = await server.mcp.list_tools()
     names = {t.name for t in tools}
 
@@ -51,7 +58,14 @@ async def test_tools_register_categorize_transaction_not_private_helper() -> Non
 
 
 @pytest.mark.asyncio
-async def test_tools_include_annotations_for_read_only_and_mutating() -> None:
+async def test_tools_include_annotations_for_read_only_and_mutating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=False)),
+    )
     tools = {tool.name: tool for tool in await server.mcp.list_tools()}
     assert tools["get_budgets"].annotations.readOnlyHint is True
     assert tools["create_transaction"].annotations.destructiveHint is True
@@ -162,10 +176,12 @@ async def test_resource_and_templates_are_exposed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_code_mode_tool_registered() -> None:
+async def test_code_mode_tools_registered() -> None:
     tools = {tool.name: tool for tool in await server.mcp.list_tools()}
-    assert "ynab_code_execute" in tools
-    assert tools["ynab_code_execute"].annotations.readOnlyHint is False
+    assert "execute" in tools
+    assert "search" in tools
+    assert tools["execute"].annotations.readOnlyHint is False
+    assert tools["search"].annotations.readOnlyHint is True
 
 
 @pytest.mark.asyncio
@@ -180,12 +196,27 @@ async def test_code_mode_replace_tools_filters_external_tool_surface(
 
     names = {tool.name for tool in await server.mcp.list_tools()}
 
-    assert "ynab_code_execute" in names
+    assert names == {"search", "execute"}
+
+
+@pytest.mark.asyncio
+async def test_code_mode_replace_tools_escape_hatch_restores_full_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=False)),
+    )
+
+    names = {tool.name for tool in await server.mcp.list_tools()}
+
+    assert "execute" in names
+    assert "search" in names
     assert "get_budgets" in names
-    assert "ping" in names
-    assert "set_preference" in names
-    assert "get_transactions" not in names
-    assert "bulk_categorize" not in names
+    assert "get_transactions" in names
+    assert "bulk_categorize" in names
+    assert len(names) > 10
 
 
 @pytest.mark.asyncio

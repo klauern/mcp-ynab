@@ -18,7 +18,7 @@ working notebook for the branch.
 - Code Mode preferences exist: `code_mode_enabled`,
   `code_mode_mutations_enabled`, `code_mode_replace_tools`,
   `code_mode_timeout_s`, and `code_mode_max_output_chars`.
-- `ynab_code_execute` is registered as the single execution tool.
+- `execute` is registered as the single execution tool.
 - The runner executes a Python snippet body under an in-process AST audit,
   captures stdout, enforces a timeout, and returns a structured result.
 - The tool proxy exposes the current namespace shape: `ynab.read.*` for
@@ -37,7 +37,7 @@ working notebook for the branch.
   security boundary. Subprocess isolation and OS resource limits remain future
   work.
 - Replacement-mode policy: the visible bootstrap tool set may need adjustment
-  after real client usage. Current visible tools are `ynab_code_execute`,
+  after real client usage. Current visible tools are `execute`,
   `get_preferences`, `set_preference`, `set_api_key`, `clear_api_key`,
   `set_preferred_budget_id`, `get_budgets`, and `ping`.
 - Stub quality: generated return types and model details are useful enough for
@@ -174,7 +174,7 @@ Cloudflare's implementation depends on the Cloudflare Workers runtime: V8 isolat
 
 | Strategy | Description |
 | --- | --- |
-| **A. Augment** | Code Mode is opt-in; existing 33 tools stay registered. `code_mode_enabled=true` adds `ynab_code_execute`. |
+| **A. Augment** | Code Mode is opt-in; existing 33 tools stay registered. `code_mode_enabled=true` adds `execute`. |
 | **B. Gate** | When `code_mode_enabled=true`, the server can hide the 33 underlying tools and expose Code Mode plus a tiny core (`get_budgets`, `ping`). Read-only and mutation tools are gated independently. |
 | **C. Replace** | Code Mode is the default interface once the gated path has been tested, with an escape hatch for direct tools while the feature stabilizes. |
 
@@ -221,7 +221,7 @@ Delivered as the MCP resource `ynab://code-mode/stubs` (mime-type `text/x-python
 | `code_mode_replace_tools: bool` | preference | Off by default for MVP; later hides direct tools after the gated path is tested |
 | `code_mode_timeout_s: float` | preference | Default `10.0`, capped at `60.0` |
 | `code_mode_max_output_chars: int` | preference | Default `8192`; truncate captured stdout |
-| `ynab_code_execute(code: str, timeout: float \| None = None)` | tool | The one tool. `timeout` is per-call and capped by policy. Annotation is conservative whenever mutation mode is enabled. |
+| `execute(code: str, timeout: float \| None = None)` | tool | The one tool. `timeout` is per-call and capped by policy. Annotation is conservative whenever mutation mode is enabled. |
 | `ynab://code-mode/stubs` | resource | Returns generated `.pyi` for the current tool registry |
 | `ynab://code-mode/examples` | resource | Returns a curated in-tree set of worked examples (categorize-by-payee, monthly cleanup, etc.) |
 
@@ -306,7 +306,7 @@ Logging mirrors the pattern in `tools/transactions.py` — `logger.info("[code-m
 | `cmd.1` Foundations | Add `code_mode_*` preferences, including separate mutation and replacement switches; wire `Preferences` validation; tests | Implemented |
 | `cmd.2` Stub generator | Introspect FastMCP tool registry; emit `.pyi`; expose as `ynab://code-mode/stubs`; tests with snapshot of generated stubs | Implemented |
 | `cmd.3` Runner + gated tool proxy (in-process) | AST audit, `_build_ynab_proxy`, read/write namespace gating, async run harness, per-call timeout, stdout capture | Implemented for MVP; subprocess hardening remains |
-| `cmd.4` `ynab_code_execute` MCP tool | Wire the runner into FastMCP; annotate; integration tests | Implemented |
+| `cmd.4` `execute` MCP tool | Wire the runner into FastMCP; annotate; integration tests | Implemented |
 | `cmd.5` Examples resource | Curated worked examples in `docs/` or `examples/`, exposed through `ynab://code-mode/examples` | Implemented in `docs/code-mode-examples.md` |
 | `cmd.6` Sandbox hardening | Move runner to subprocess; `resource.setrlimit`; consider seccomp on Linux; revise threat model in this notebook | Open |
 | `cmd.7` Surface gating / replacement | After the gated runner works, hide direct tools behind a `code_mode_replace_tools` pref and plan toward Code Mode as the primary interface | Implemented for MVP |

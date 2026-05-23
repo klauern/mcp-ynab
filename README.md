@@ -88,6 +88,12 @@ The server exposes the following over MCP:
 | `set_preferred_budget_id` | Cache a preferred budget ID for default-targeted tools |
 | `cache_categories` | Cache a budget's category list locally |
 
+For account transfers and credit-card payments, use the destination account's
+transfer payee ID as `payee_id` when creating or updating a transaction. The
+`get_payees` tool lists transfer payees with their `Transfer Account ID`.
+Do not pass a `Transfer : ...` value as `payee_name`; YNAB rejects or treats
+that as a regular payee instead of creating a linked transfer.
+
 **Resources**
 
 - `ynab://preferences/budget_id` — currently preferred budget ID

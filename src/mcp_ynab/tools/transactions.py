@@ -254,7 +254,16 @@ async def _confirm_create_transaction(
 async def create_transaction(
     account_id: str,
     amount: Annotated[float, Field(description="Amount in dollars")],
-    payee_name: str,
+    payee_name: Optional[str] = None,
+    payee_id: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Existing YNAB payee ID. For transfers, use the destination account's "
+                "transfer payee ID instead of a 'Transfer :' payee_name."
+            )
+        ),
+    ] = None,
     category_name: Optional[str] = None,
     memo: Optional[str] = None,
     confirm: Annotated[
@@ -270,11 +279,20 @@ async def create_transaction(
 ) -> Dict[str, Any]:
     """Create a new transaction in YNAB.
 
+    Provide exactly one of ``payee_name`` or ``payee_id``. To create a true
+    account transfer, pass the destination account's transfer payee as
+    ``payee_id``; YNAB does not accept transfer payees by name.
+
     When ``confirm`` is True and an MCP context is available, the user is
     asked to confirm the post via ``ctx.elicit``. If the user declines,
     cancels, or answers no, the call returns ``{"cancelled": True, ...}``
     without contacting YNAB.
     """
+    if payee_name is None and payee_id is None:
+        raise ValueError("create_transaction requires either payee_name or payee_id.")
+    if payee_name is not None and payee_id is not None:
+        raise ValueError("create_transaction accepts payee_name or payee_id, not both.")
+
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
 
@@ -290,7 +308,7 @@ async def create_transaction(
             ok = await _confirm_create_transaction(
                 ctx,
                 amount=amount,
-                payee_name=payee_name,
+                payee_name=payee_name or f"payee_id:{payee_id}",
                 txn_date=txn_date,
                 category_name=resolved_name,
                 memo=memo,
@@ -304,6 +322,7 @@ async def create_transaction(
             date=txn_date,
             amount=amount_milliunits,
             payee_name=payee_name,
+            payee_id=payee_id,
             memo=memo,
             category_id=category_id,
         )
@@ -877,6 +896,15 @@ async def update_transaction(
     *,
     memo: Optional[str] = None,
     payee_name: Optional[str] = None,
+    payee_id: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Existing YNAB payee ID. For transfers, use the destination account's "
+                "transfer payee ID instead of a 'Transfer :' payee_name."
+            )
+        ),
+    ] = None,
     amount: Annotated[
         Optional[float],
         Field(description="Amount in dollars; converted to milliunits internally."),
@@ -902,6 +930,8 @@ async def update_transaction(
         transaction_id: The transaction ID to update.
         memo: New memo text.
         payee_name: New payee name.
+        payee_id: Existing YNAB payee ID. For account transfers, use the
+            destination account's transfer payee ID.
         amount: New amount in dollars (outflows are negative). Converted to
             milliunits internally.
         txn_date: New ISO date string (YYYY-MM-DD).
@@ -910,11 +940,16 @@ async def update_transaction(
         approved: New approval state.
         category_id: New category ID.
     """
+    if payee_name is not None and payee_id is not None:
+        raise ValueError("update_transaction accepts payee_name or payee_id, not both.")
+
     supplied: Dict[str, Any] = {}
     if memo is not None:
         supplied["memo"] = memo
     if payee_name is not None:
         supplied["payee_name"] = payee_name
+    if payee_id is not None:
+        supplied["payee_id"] = payee_id
     if amount is not None:
         supplied["amount"] = int(round(amount * 1000))
     if txn_date is not None:
@@ -944,7 +979,7 @@ async def update_transaction(
         raise ValueError(
             "update_transaction requires at least one field to update "
             "(memo, payee_name, amount, txn_date, flag_color, cleared, "
-            "approved, or category_id)."
+            "approved, payee_id, or category_id)."
         )
 
     async with await _s.get_ynab_client() as client:
@@ -959,6 +994,7 @@ async def update_transaction(
     field_labels = {
         "memo": "Memo",
         "payee_name": "Payee",
+        "payee_id": "Payee ID",
         "amount": "Amount",
         "var_date": "Date",
         "flag_color": "Flag",

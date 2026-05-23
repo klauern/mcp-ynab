@@ -1066,6 +1066,48 @@ async def test_create_transaction_returns_empty_dict_when_response_missing(
     assert result == {}
 
 
+@pytest.mark.asyncio
+async def test_create_transaction_accepts_payee_id_for_transfers(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    created_txn = MagicMock()
+    created_txn.to_dict.return_value = {"id": "new-transfer"}
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(transaction=created_txn)
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=-25.0,
+        payee_id="transfer-payee-1",
+    )
+
+    assert result == {"id": "new-transfer"}
+    call = mock_ynab_apis.transactions.create_transaction.call_args
+    posted = call.args[1].transaction
+    assert posted.payee_id == "transfer-payee-1"
+    assert posted.payee_name is None
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_rejects_both_payee_name_and_payee_id(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="payee_name or payee_id, not both"):
+        await server.create_transaction(
+            account_id="acct-1",
+            amount=-25.0,
+            payee_name="Transfer : Checking",
+            payee_id="transfer-payee-1",
+        )
+
+    mock_ynab_apis.transactions.create_transaction.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # bulk_categorize (idempotent mutating tool, mocked end-to-end)
 # ---------------------------------------------------------------------------
@@ -1310,6 +1352,40 @@ async def test_update_transaction_converts_amount_dollars_to_milliunits(
     await server.update_transaction("b-1", "t-1", amount=-12.34)
 
     assert captured == {"amount": -12340}
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_accepts_payee_id_for_transfers(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    captured: dict = {}
+
+    def fake_existing(**kwargs: object) -> dict:
+        captured.update(kwargs)
+        return kwargs  # type: ignore[return-value]
+
+    server.ExistingTransaction = fake_existing  # type: ignore[assignment]
+    server.PutTransactionWrapper = lambda transaction: SimpleNamespace(transaction=transaction)  # type: ignore[assignment]
+
+    result = await server.update_transaction("b-1", "t-1", payee_id="transfer-payee-1")
+
+    assert "Updated transaction `t-1`" in result
+    assert captured == {"payee_id": "transfer-payee-1"}
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_rejects_both_payee_name_and_payee_id(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="payee_name or payee_id, not both"):
+        await server.update_transaction(
+            "b-1",
+            "t-1",
+            payee_name="Transfer : Checking",
+            payee_id="transfer-payee-1",
+        )
+
+    mock_ynab_apis.transactions.update_transaction.assert_not_called()
 
 
 @pytest.mark.asyncio

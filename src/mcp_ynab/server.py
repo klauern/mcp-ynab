@@ -223,15 +223,19 @@ from .prompts import (  # noqa: E402, F401
     weekly_review,
 )
 
-_CODE_MODE_BOOTSTRAP_VISIBLE_TOOLS = frozenset({
-    "clear_api_key",
-    "get_preferences",
-    "ping",
-    "set_api_key",
-    "set_preference",
-    "set_preferred_budget_id",
-})
-_CODE_MODE_REPLACEMENT_VISIBLE_TOOLS = frozenset({"search", "execute"}) | _CODE_MODE_BOOTSTRAP_VISIBLE_TOOLS
+_CODE_MODE_BOOTSTRAP_VISIBLE_TOOLS = frozenset(
+    {
+        "clear_api_key",
+        "get_preferences",
+        "ping",
+        "set_api_key",
+        "set_preference",
+        "set_preferred_budget_id",
+    }
+)
+_CODE_MODE_REPLACEMENT_VISIBLE_TOOLS = (
+    frozenset({"search", "execute"}) | _CODE_MODE_BOOTSTRAP_VISIBLE_TOOLS
+)
 _list_tools_without_code_mode_filter = mcp.list_tools
 _call_tool_without_code_mode_filter = mcp.call_tool
 

@@ -314,6 +314,7 @@ async def test_get_transactions_renders_table_for_recent_transactions(
                 amount_milliunits=200_000,
                 payee_name="Paycheck",
                 category_name="Income",
+                cleared="reconciled",
             ),
         ]
     )
@@ -323,6 +324,8 @@ async def test_get_transactions_renders_table_for_recent_transactions(
     assert "# Recent Transactions" in result
     assert "Coffee Shop" in result
     assert "Paycheck" in result
+    assert "Cleared" in result
+    assert "reconciled" in result
     assert "$-15.50" in result or "-$15.50" in result or "$-15.50" in result
     assert "$200.00" in result
 
@@ -487,6 +490,8 @@ async def test_needs_attention_filters_uncategorized_only(
     result = await server.get_transactions_needing_attention("b-1", filter_type="uncategorized")
 
     assert "# Transactions Needing Attention" in result
+    assert "Cleared" in result
+    assert "cleared" in result
     assert "Mystery" in result
     assert "Coffee" not in result
     assert "Pending" not in result, "unapproved-only txns excluded when filter is uncategorized"
@@ -1844,6 +1849,7 @@ async def test_get_transactions_by_category_renders_table(
                 payee_name="Bookstore",
                 category_id="cat-1",
                 approved=True,
+                cleared="uncleared",
             ),
         ]
     )
@@ -1853,6 +1859,8 @@ async def test_get_transactions_by_category_renders_table(
     assert "# Transactions for Category `cat-1`" in result
     assert "Cafe" in result
     assert "Bookstore" in result
+    assert "Cleared" in result
+    assert "uncleared" in result
 
 
 @pytest.mark.asyncio

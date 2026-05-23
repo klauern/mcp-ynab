@@ -344,8 +344,8 @@ async def get_transactions(
         if not all_transactions:
             return markdown + "_No recent transactions found._\n"
 
-        headers = ["ID", "Date", "Amount", "Payee Name", "Category Name", "Memo"]
-        align = ["left", "left", "right", "left", "left", "left"]
+        headers = ["ID", "Date", "Amount", "Cleared", "Payee Name", "Category Name", "Memo"]
+        align = ["left", "left", "right", "left", "left", "left", "left"]
         rows = []
 
         for txn in all_transactions:
@@ -355,6 +355,7 @@ async def get_transactions(
                     txn.id,
                     txn.var_date.strftime("%Y-%m-%d"),
                     amount_str,
+                    getattr(txn, "cleared", None) or "N/A",
                     txn.payee_name or "N/A",
                     txn.category_name or "N/A",
                     txn.memo or "",
@@ -385,6 +386,7 @@ def _get_transaction_row(
         txn.var_date.strftime("%Y-%m-%d"),
         account_map.get(txn.account_id, "Unknown"),
         amount_str,
+        getattr(txn, "cleared", None) or "N/A",
         txn.payee_name or "N/A",
         ", ".join(status),
         txn.memo or "",
@@ -444,8 +446,8 @@ async def get_transactions_needing_attention(
             markdown += f"- Looking back {days_back} days\n"
         markdown += "\n"
 
-        headers = ["ID", "Date", "Account", "Amount", "Payee", "Status", "Memo"]
-        align = ["left", "left", "left", "right", "left", "left", "left"]
+        headers = ["ID", "Date", "Account", "Amount", "Cleared", "Payee", "Status", "Memo"]
+        align = ["left", "left", "left", "right", "left", "left", "left", "left"]
         rows = [_get_transaction_row(txn, account_map, filter_type) for txn in needs_attention]
 
         markdown += _build_markdown_table(rows, headers, align)
@@ -1064,8 +1066,8 @@ async def get_transactions_by_category(
     if not transactions:
         return markdown + "_No transactions found for this category._\n"
 
-    headers = ["ID", "Date", "Account", "Amount", "Payee", "Status", "Memo"]
-    align = ["left", "left", "left", "right", "left", "left", "left"]
+    headers = ["ID", "Date", "Account", "Amount", "Cleared", "Payee", "Status", "Memo"]
+    align = ["left", "left", "left", "right", "left", "left", "left", "left"]
     rows = [_get_transaction_row(txn, account_map, "both") for txn in transactions]
 
     markdown += _build_markdown_table(rows, headers, align)

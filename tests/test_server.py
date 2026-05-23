@@ -196,7 +196,16 @@ async def test_code_mode_replace_tools_filters_external_tool_surface(
 
     names = {tool.name for tool in await server.mcp.list_tools()}
 
-    assert names == {"search", "execute"}
+    assert names == {
+        "search",
+        "execute",
+        "clear_api_key",
+        "get_preferences",
+        "ping",
+        "set_api_key",
+        "set_preference",
+        "set_preferred_budget_id",
+    }
 
 
 @pytest.mark.asyncio

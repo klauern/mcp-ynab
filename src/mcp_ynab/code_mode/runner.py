@@ -131,7 +131,8 @@ class _BoundedStringIO(io.TextIOBase):
 
     def __init__(self, max_chars: int) -> None:
         self._buf = io.StringIO()
-        self._remaining = max_chars
+        # Negative means unlimited; use a large sentinel so write() logic is unchanged.
+        self._remaining = max_chars if max_chars >= 0 else 10**18
         self.truncated = False
 
     def write(self, s: str) -> int:

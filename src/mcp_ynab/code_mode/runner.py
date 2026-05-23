@@ -100,12 +100,16 @@ def _serialize_result(result: Any) -> str:
 
 
 def _truncate_result(result: Any, max_chars: int) -> tuple[Any, bool]:
-    if max_chars < 0:
-        return result, False
-
     serialized = _serialize_result(result)
+    try:
+        json_safe = json.loads(serialized)
+    except json.JSONDecodeError:
+        json_safe = serialized
+
+    if max_chars < 0:
+        return json_safe, False
     if len(serialized) <= max_chars:
-        return result, False
+        return json_safe, False
 
     preview, _ = _truncate(serialized, max_chars)
     return (
@@ -219,13 +223,14 @@ async def run_code(
 
     logs_buffer = io.StringIO()
     try:
-        _audit_code(code, mutations_enabled=mutations_enabled)
+        wrapped_code = _wrap_code(code)
+        _audit_code(wrapped_code, mutations_enabled=mutations_enabled)
         sandbox_globals = {
             "__builtins__": SAFE_BUILTINS,
             "LIMIT": 100,
             "ynab": _build_ynab_proxy(mcp, ctx, mutations_enabled=mutations_enabled),
         }
-        compiled = compile(_wrap_code(code), "<ynab-code-mode>", "exec")
+        compiled = compile(wrapped_code, "<ynab-code-mode>", "exec")
         exec(compiled, sandbox_globals, sandbox_globals)
         main = sandbox_globals["__main__"]
         with contextlib.redirect_stdout(logs_buffer):

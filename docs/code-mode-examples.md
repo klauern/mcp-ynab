@@ -5,7 +5,7 @@ Python namespace:
 
 - `ynab.read.*` is available when `code_mode_enabled=true`.
 - `ynab.write.*` requires `code_mode_mutations_enabled=true`.
-- `LIMIT` is available for keeping returned data small.
+- `LIMIT` is available for keeping returned data small (defaults to 100).
 
 ## Read-only budget listing
 

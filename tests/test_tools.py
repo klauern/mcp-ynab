@@ -20,6 +20,7 @@ from ynab.models.transaction_detail import TransactionDetail
 from ynab.rest import ApiException
 
 from mcp_ynab import server
+from mcp_ynab.state import Preferences
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,9 @@ def _account_mock(
     account_type: str,
     balance_milliunits: int,
     *,
+    cleared_balance_milliunits: int | None = None,
+    uncleared_balance_milliunits: int | None = None,
+    on_budget: bool = True,
     closed: bool = False,
     deleted: bool = False,
 ) -> MagicMock:
@@ -54,6 +58,15 @@ def _account_mock(
     account = MagicMock(spec=Account)
     account.id = account_id
     account.name = name
+    account.type = account_type
+    account.on_budget = on_budget
+    account.balance = balance_milliunits
+    account.cleared_balance = (
+        balance_milliunits if cleared_balance_milliunits is None else cleared_balance_milliunits
+    )
+    account.uncleared_balance = (
+        0 if uncleared_balance_milliunits is None else uncleared_balance_milliunits
+    )
     account.closed = closed
     account.deleted = deleted
     account.to_dict.return_value = {
@@ -76,7 +89,12 @@ def _txn_mock(
     category_name: str | None = "Food",
     memo: str | None = "",
     approved: bool = True,
+    cleared: str = "cleared",
     account_id: str = "acct-1",
+    transfer_account_id: str | None = None,
+    transfer_transaction_id: str | None = None,
+    matched_transaction_id: str | None = None,
+    import_id: str | None = None,
     var_date: date | None = None,
 ) -> MagicMock:
     """Build a TransactionDetail-spec'd mock for use in API responses."""
@@ -89,7 +107,12 @@ def _txn_mock(
     txn.category_name = category_name
     txn.memo = memo
     txn.approved = approved
+    txn.cleared = cleared
     txn.var_date = var_date or date(2026, 5, 1)
+    txn.transfer_account_id = transfer_account_id
+    txn.transfer_transaction_id = transfer_transaction_id
+    txn.matched_transaction_id = matched_transaction_id
+    txn.import_id = import_id
     return txn
 
 
@@ -291,6 +314,7 @@ async def test_get_transactions_renders_table_for_recent_transactions(
                 amount_milliunits=200_000,
                 payee_name="Paycheck",
                 category_name="Income",
+                cleared="reconciled",
             ),
         ]
     )
@@ -300,6 +324,8 @@ async def test_get_transactions_renders_table_for_recent_transactions(
     assert "# Recent Transactions" in result
     assert "Coffee Shop" in result
     assert "Paycheck" in result
+    assert "Cleared" in result
+    assert "reconciled" in result
     assert "$-15.50" in result or "-$15.50" in result or "$-15.50" in result
     assert "$200.00" in result
 
@@ -354,6 +380,91 @@ async def test_get_transactions_propagates_api_exception(
         await server.get_transactions("b-1", "acct-1")
 
 
+@pytest.mark.asyncio
+async def test_get_account_reconciliation_profile_returns_structured_totals(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.accounts.get_account_by_id.return_value = _resp(
+        account=_account_mock(
+            "acct-1",
+            "Checking",
+            "checking",
+            125_000,
+            cleared_balance_milliunits=100_000,
+            uncleared_balance_milliunits=25_000,
+        )
+    )
+    mock_ynab_apis.transactions.get_transactions_by_account.return_value = _resp(
+        transactions=[
+            _txn_mock("t-1", amount_milliunits=-10_000, cleared="cleared"),
+            _txn_mock("t-2", amount_milliunits=25_000, cleared="uncleared"),
+            _txn_mock(
+                "t-3",
+                amount_milliunits=-5_000,
+                cleared="reconciled",
+                transfer_account_id="acct-2",
+            ),
+        ]
+    )
+
+    result = await server.get_account_reconciliation_profile(
+        "b-1", "acct-1", include_transfers=False, limit=1
+    )
+
+    assert result["account"]["balance_milliunits"] == 125_000
+    assert result["account"]["cleared_balance"] == 100.0
+    assert result["totals"]["count"] == 2
+    assert result["totals"]["amount_milliunits"] == 15_000
+    assert result["totals"]["by_cleared_milliunits"] == {
+        "cleared": -10_000,
+        "uncleared": 25_000,
+        "reconciled": 0,
+    }
+    assert result["transactions"] == [
+        {
+            "id": "t-1",
+            "date": "2026-05-01",
+            "amount_milliunits": -10_000,
+            "amount": -10.0,
+            "cleared": "cleared",
+            "approved": True,
+            "payee_name": "Coffee Shop",
+            "category_name": "Food",
+            "memo": "",
+            "account_id": "acct-1",
+            "transfer_account_id": None,
+            "transfer_transaction_id": None,
+            "matched_transaction_id": None,
+            "import_id": None,
+        }
+    ]
+    assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_find_account_transaction_subset_matches_returns_compact_matches(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transactions_by_account.return_value = _resp(
+        transactions=[
+            _txn_mock("t-1", amount_milliunits=-100_000, payee_name="Rent"),
+            _txn_mock("t-2", amount_milliunits=-50_000, payee_name="Groceries"),
+            _txn_mock("t-3", amount_milliunits=-25_000, payee_name="Fuel"),
+        ]
+    )
+
+    result = await server.find_account_transaction_subset_matches(
+        "b-1", "acct-1", target_amount=-75.0, max_subset_size=2
+    )
+
+    assert result["target_milliunits"] == -75_000
+    assert result["truncated"] is False
+    assert len(result["matches"]) == 1
+    match = result["matches"][0]
+    assert match["amount_milliunits"] == -75_000
+    assert [txn["id"] for txn in match["transactions"]] == ["t-2", "t-3"]
+
+
 # ---------------------------------------------------------------------------
 # get_transactions_needing_attention
 # ---------------------------------------------------------------------------
@@ -379,6 +490,8 @@ async def test_needs_attention_filters_uncategorized_only(
     result = await server.get_transactions_needing_attention("b-1", filter_type="uncategorized")
 
     assert "# Transactions Needing Attention" in result
+    assert "Cleared" in result
+    assert "cleared" in result
     assert "Mystery" in result
     assert "Coffee" not in result
     assert "Pending" not in result, "unapproved-only txns excluded when filter is uncategorized"
@@ -441,10 +554,16 @@ async def test_needs_attention_returns_friendly_message_when_nothing_to_show(
 @pytest.mark.asyncio
 async def test_needs_attention_rejects_invalid_filter_type_via_mcp_layer(
     mock_ynab_apis: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pydantic-via-FastMCP rejects out-of-Literal values before the tool runs."""
     from mcp.server.fastmcp.exceptions import ToolError
 
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=False)),
+    )
     with pytest.raises(ToolError) as exc_info:
         await server.mcp.call_tool(
             "get_transactions_needing_attention",
@@ -947,6 +1066,48 @@ async def test_create_transaction_returns_empty_dict_when_response_missing(
     assert result == {}
 
 
+@pytest.mark.asyncio
+async def test_create_transaction_accepts_payee_id_for_transfers(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    created_txn = MagicMock()
+    created_txn.to_dict.return_value = {"id": "new-transfer"}
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(transaction=created_txn)
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=-25.0,
+        payee_id="transfer-payee-1",
+    )
+
+    assert result == {"id": "new-transfer"}
+    call = mock_ynab_apis.transactions.create_transaction.call_args
+    posted = call.args[1].transaction
+    assert posted.payee_id == "transfer-payee-1"
+    assert posted.payee_name is None
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_rejects_both_payee_name_and_payee_id(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="payee_name or payee_id, not both"):
+        await server.create_transaction(
+            account_id="acct-1",
+            amount=-25.0,
+            payee_name="Transfer : Checking",
+            payee_id="transfer-payee-1",
+        )
+
+    mock_ynab_apis.transactions.create_transaction.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # bulk_categorize (idempotent mutating tool, mocked end-to-end)
 # ---------------------------------------------------------------------------
@@ -1191,6 +1352,40 @@ async def test_update_transaction_converts_amount_dollars_to_milliunits(
     await server.update_transaction("b-1", "t-1", amount=-12.34)
 
     assert captured == {"amount": -12340}
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_accepts_payee_id_for_transfers(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    captured: dict = {}
+
+    def fake_existing(**kwargs: object) -> dict:
+        captured.update(kwargs)
+        return kwargs  # type: ignore[return-value]
+
+    server.ExistingTransaction = fake_existing  # type: ignore[assignment]
+    server.PutTransactionWrapper = lambda transaction: SimpleNamespace(transaction=transaction)  # type: ignore[assignment]
+
+    result = await server.update_transaction("b-1", "t-1", payee_id="transfer-payee-1")
+
+    assert "Updated transaction `t-1`" in result
+    assert captured == {"payee_id": "transfer-payee-1"}
+
+
+@pytest.mark.asyncio
+async def test_update_transaction_rejects_both_payee_name_and_payee_id(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="payee_name or payee_id, not both"):
+        await server.update_transaction(
+            "b-1",
+            "t-1",
+            payee_name="Transfer : Checking",
+            payee_id="transfer-payee-1",
+        )
+
+    mock_ynab_apis.transactions.update_transaction.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1730,6 +1925,7 @@ async def test_get_transactions_by_category_renders_table(
                 payee_name="Bookstore",
                 category_id="cat-1",
                 approved=True,
+                cleared="uncleared",
             ),
         ]
     )
@@ -1739,6 +1935,8 @@ async def test_get_transactions_by_category_renders_table(
     assert "# Transactions for Category `cat-1`" in result
     assert "Cafe" in result
     assert "Bookstore" in result
+    assert "Cleared" in result
+    assert "uncleared" in result
 
 
 @pytest.mark.asyncio

@@ -308,3 +308,64 @@ async def test_arbitrary_month_resource_uses_iso_date(
     assert "2026-03-01" in result[0].text
     args = mock_ynab_apis.months.get_budget_month.call_args
     assert args.args[1] == date(2026, 3, 1)
+
+
+# ---------------------------------------------------------------------------
+# update_category
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_category_rename(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    cat = _category_mock("c-1", "Financial Planning (Future)")
+    mock_ynab_apis.categories.update_category.return_value = _resp(category=cat)
+
+    result = await server.update_category("budget-1", "c-1", name="Financial Planning (Future)")
+
+    assert "renamed to **Financial Planning (Future)**" in result
+    args = mock_ynab_apis.categories.update_category.call_args
+    budget_id, category_id, wrapper = args.args
+    assert budget_id == "budget-1"
+    assert category_id == "c-1"
+    assert wrapper.category.name == "Financial Planning (Future)"
+    assert wrapper.category.note is None
+    assert wrapper.category.category_group_id is None
+
+
+@pytest.mark.asyncio
+async def test_update_category_note(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    cat = _category_mock("c-1", "Groceries", note="Aldi only")
+    mock_ynab_apis.categories.update_category.return_value = _resp(category=cat)
+
+    result = await server.update_category("budget-1", "c-1", note="Aldi only")
+
+    assert "note set to" in result
+    args = mock_ynab_apis.categories.update_category.call_args
+    _, _, wrapper = args.args
+    assert wrapper.category.note == "Aldi only"
+    assert wrapper.category.name is None
+
+
+@pytest.mark.asyncio
+async def test_update_category_move_group(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    cat = _category_mock("c-1", "Groceries")
+    mock_ynab_apis.categories.update_category.return_value = _resp(category=cat)
+
+    result = await server.update_category("budget-1", "c-1", category_group_id="group-2")
+
+    assert "moved to group" in result
+    args = mock_ynab_apis.categories.update_category.call_args
+    _, _, wrapper = args.args
+    assert wrapper.category.category_group_id == "group-2"
+
+
+@pytest.mark.asyncio
+async def test_update_category_requires_at_least_one_field() -> None:
+    with pytest.raises(ValueError, match="At least one of"):
+        await server.update_category("budget-1", "c-1")

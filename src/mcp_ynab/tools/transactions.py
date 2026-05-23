@@ -9,6 +9,7 @@ monkeypatches propagate.
 """
 
 import difflib
+import itertools
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
@@ -253,7 +254,16 @@ async def _confirm_create_transaction(
 async def create_transaction(
     account_id: str,
     amount: Annotated[float, Field(description="Amount in dollars")],
-    payee_name: str,
+    payee_name: Optional[str] = None,
+    payee_id: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Existing YNAB payee ID. For transfers, use the destination account's "
+                "transfer payee ID instead of a 'Transfer :' payee_name."
+            )
+        ),
+    ] = None,
     category_name: Optional[str] = None,
     memo: Optional[str] = None,
     confirm: Annotated[
@@ -269,11 +279,20 @@ async def create_transaction(
 ) -> Dict[str, Any]:
     """Create a new transaction in YNAB.
 
+    Provide exactly one of ``payee_name`` or ``payee_id``. To create a true
+    account transfer, pass the destination account's transfer payee as
+    ``payee_id``; YNAB does not accept transfer payees by name.
+
     When ``confirm`` is True and an MCP context is available, the user is
     asked to confirm the post via ``ctx.elicit``. If the user declines,
     cancels, or answers no, the call returns ``{"cancelled": True, ...}``
     without contacting YNAB.
     """
+    if payee_name is None and payee_id is None:
+        raise ValueError("create_transaction requires either payee_name or payee_id.")
+    if payee_name is not None and payee_id is not None:
+        raise ValueError("create_transaction accepts payee_name or payee_id, not both.")
+
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
 
@@ -289,7 +308,7 @@ async def create_transaction(
             ok = await _confirm_create_transaction(
                 ctx,
                 amount=amount,
-                payee_name=payee_name,
+                payee_name=payee_name or f"payee_id:{payee_id}",
                 txn_date=txn_date,
                 category_name=resolved_name,
                 memo=memo,
@@ -303,6 +322,7 @@ async def create_transaction(
             date=txn_date,
             amount=amount_milliunits,
             payee_name=payee_name,
+            payee_id=payee_id,
             memo=memo,
             category_id=category_id,
         )
@@ -343,8 +363,8 @@ async def get_transactions(
         if not all_transactions:
             return markdown + "_No recent transactions found._\n"
 
-        headers = ["ID", "Date", "Amount", "Payee Name", "Category Name", "Memo"]
-        align = ["left", "left", "right", "left", "left", "left"]
+        headers = ["ID", "Date", "Amount", "Cleared", "Payee Name", "Category Name", "Memo"]
+        align = ["left", "left", "right", "left", "left", "left", "left"]
         rows = []
 
         for txn in all_transactions:
@@ -354,6 +374,7 @@ async def get_transactions(
                     txn.id,
                     txn.var_date.strftime("%Y-%m-%d"),
                     amount_str,
+                    getattr(txn, "cleared", None) or "N/A",
                     txn.payee_name or "N/A",
                     txn.category_name or "N/A",
                     txn.memo or "",
@@ -384,6 +405,7 @@ def _get_transaction_row(
         txn.var_date.strftime("%Y-%m-%d"),
         account_map.get(txn.account_id, "Unknown"),
         amount_str,
+        getattr(txn, "cleared", None) or "N/A",
         txn.payee_name or "N/A",
         ", ".join(status),
         txn.memo or "",
@@ -443,8 +465,8 @@ async def get_transactions_needing_attention(
             markdown += f"- Looking back {days_back} days\n"
         markdown += "\n"
 
-        headers = ["ID", "Date", "Account", "Amount", "Payee", "Status", "Memo"]
-        align = ["left", "left", "left", "right", "left", "left", "left"]
+        headers = ["ID", "Date", "Account", "Amount", "Cleared", "Payee", "Status", "Memo"]
+        align = ["left", "left", "left", "right", "left", "left", "left", "left"]
         rows = [_get_transaction_row(txn, account_map, filter_type) for txn in needs_attention]
 
         markdown += _build_markdown_table(rows, headers, align)
@@ -469,6 +491,174 @@ def _find_transaction_by_id(
         ):
             return txn
     return None
+
+
+def _txn_date_iso(txn: Any) -> str:
+    txn_date = getattr(txn, "var_date", None) or getattr(txn, "date", None)
+    if hasattr(txn_date, "strftime"):
+        return txn_date.strftime("%Y-%m-%d")
+    return str(txn_date or "")
+
+
+def _txn_to_reconciliation_row(txn: Any) -> Dict[str, Any]:
+    amount_milliunits = int(getattr(txn, "amount", 0) or 0)
+    return {
+        "id": getattr(txn, "id", None),
+        "date": _txn_date_iso(txn),
+        "amount_milliunits": amount_milliunits,
+        "amount": amount_milliunits / 1000,
+        "cleared": getattr(txn, "cleared", None),
+        "approved": getattr(txn, "approved", None),
+        "payee_name": getattr(txn, "payee_name", None),
+        "category_name": getattr(txn, "category_name", None),
+        "memo": getattr(txn, "memo", None),
+        "account_id": getattr(txn, "account_id", None),
+        "transfer_account_id": getattr(txn, "transfer_account_id", None),
+        "transfer_transaction_id": getattr(txn, "transfer_transaction_id", None),
+        "matched_transaction_id": getattr(txn, "matched_transaction_id", None),
+        "import_id": getattr(txn, "import_id", None),
+    }
+
+
+def _sum_milliunits(rows: List[Dict[str, Any]]) -> int:
+    return sum(int(row["amount_milliunits"]) for row in rows)
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def get_account_reconciliation_profile(
+    budget_id: str,
+    account_id: str,
+    since_date: Annotated[
+        Optional[date],
+        Field(description="ISO date (YYYY-MM-DD) to fetch transactions since. Defaults to all."),
+    ] = None,
+    cleared: Annotated[
+        Optional[Literal["cleared", "uncleared", "reconciled"]],
+        Field(description="Optional cleared status filter."),
+    ] = None,
+    include_transfers: bool = True,
+    limit: Annotated[int, Field(description="Maximum transaction rows to include.")] = 200,
+) -> Dict[str, Any]:
+    """Return structured account balance and transaction status totals for reconciliation."""
+    async with await _s.get_ynab_client() as client:
+        accounts_api = _s.AccountsApi(client)
+        transactions_api = _s.TransactionsApi(client)
+
+        account = accounts_api.get_account_by_id(budget_id, account_id).data.account
+        response = transactions_api.get_transactions_by_account(
+            budget_id, account_id, since_date=since_date
+        )
+
+    rows = [_txn_to_reconciliation_row(txn) for txn in response.data.transactions]
+    if cleared is not None:
+        rows = [row for row in rows if row["cleared"] == cleared]
+    if not include_transfers:
+        rows = [
+            row
+            for row in rows
+            if not row["transfer_account_id"] and not row["transfer_transaction_id"]
+        ]
+
+    totals_by_cleared: Dict[str, int] = {"cleared": 0, "uncleared": 0, "reconciled": 0}
+    counts_by_cleared: Dict[str, int] = {"cleared": 0, "uncleared": 0, "reconciled": 0}
+    for row in rows:
+        status = row["cleared"]
+        if status in totals_by_cleared:
+            totals_by_cleared[status] += int(row["amount_milliunits"])
+            counts_by_cleared[status] += 1
+
+    balance_milliunits = int(getattr(account, "balance", 0) or 0)
+    cleared_balance_milliunits = int(getattr(account, "cleared_balance", 0) or 0)
+    uncleared_balance_milliunits = int(getattr(account, "uncleared_balance", 0) or 0)
+    return {
+        "account": {
+            "id": getattr(account, "id", account_id),
+            "name": getattr(account, "name", None),
+            "type": getattr(account, "type", None),
+            "on_budget": getattr(account, "on_budget", None),
+            "closed": getattr(account, "closed", None),
+            "deleted": getattr(account, "deleted", None),
+            "balance_milliunits": balance_milliunits,
+            "balance": balance_milliunits / 1000,
+            "cleared_balance_milliunits": cleared_balance_milliunits,
+            "cleared_balance": cleared_balance_milliunits / 1000,
+            "uncleared_balance_milliunits": uncleared_balance_milliunits,
+            "uncleared_balance": uncleared_balance_milliunits / 1000,
+        },
+        "filters": {
+            "since_date": since_date.isoformat() if since_date else None,
+            "cleared": cleared,
+            "include_transfers": include_transfers,
+            "limit": limit,
+        },
+        "totals": {
+            "count": len(rows),
+            "amount_milliunits": _sum_milliunits(rows),
+            "amount": _sum_milliunits(rows) / 1000,
+            "by_cleared_milliunits": totals_by_cleared,
+            "by_cleared": {key: value / 1000 for key, value in totals_by_cleared.items()},
+            "count_by_cleared": counts_by_cleared,
+        },
+        "transactions": rows[: max(0, limit)],
+        "truncated": len(rows) > max(0, limit),
+    }
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def find_account_transaction_subset_matches(
+    budget_id: str,
+    account_id: str,
+    target_amount: Annotated[float, Field(description="Target sum in dollars.")],
+    since_date: Annotated[
+        Optional[date],
+        Field(description="ISO date (YYYY-MM-DD) to fetch transactions since. Defaults to all."),
+    ] = None,
+    tolerance: Annotated[float, Field(description="Allowed difference in dollars.")] = 0.0,
+    max_subset_size: Annotated[int, Field(description="Maximum transactions per match.")] = 3,
+    candidate_limit: Annotated[int, Field(description="Maximum candidates to search.")] = 25,
+) -> Dict[str, Any]:
+    """Find compact transaction subsets whose amounts match a reconciliation difference."""
+    async with await _s.get_ynab_client() as client:
+        transactions_api = _s.TransactionsApi(client)
+        response = transactions_api.get_transactions_by_account(
+            budget_id, account_id, since_date=since_date
+        )
+
+    rows = [_txn_to_reconciliation_row(txn) for txn in response.data.transactions]
+    rows = rows[: max(0, candidate_limit)]
+    target_milliunits = int(round(target_amount * 1000))
+    tolerance_milliunits = int(round(abs(tolerance) * 1000))
+    max_subset_size = max(1, min(max_subset_size, 5))
+
+    matches: List[Dict[str, Any]] = []
+    for size in range(1, max_subset_size + 1):
+        for combo in itertools.combinations(rows, size):
+            total = _sum_milliunits(list(combo))
+            difference = total - target_milliunits
+            if abs(difference) <= tolerance_milliunits:
+                matches.append(
+                    {
+                        "amount_milliunits": total,
+                        "amount": total / 1000,
+                        "difference_milliunits": difference,
+                        "difference": difference / 1000,
+                        "transactions": list(combo),
+                    }
+                )
+                if len(matches) >= 20:
+                    return {
+                        "target_milliunits": target_milliunits,
+                        "target": target_amount,
+                        "matches": matches,
+                        "truncated": True,
+                    }
+
+    return {
+        "target_milliunits": target_milliunits,
+        "target": target_amount,
+        "matches": matches,
+        "truncated": False,
+    }
 
 
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
@@ -706,6 +896,15 @@ async def update_transaction(
     *,
     memo: Optional[str] = None,
     payee_name: Optional[str] = None,
+    payee_id: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Existing YNAB payee ID. For transfers, use the destination account's "
+                "transfer payee ID instead of a 'Transfer :' payee_name."
+            )
+        ),
+    ] = None,
     amount: Annotated[
         Optional[float],
         Field(description="Amount in dollars; converted to milliunits internally."),
@@ -731,6 +930,8 @@ async def update_transaction(
         transaction_id: The transaction ID to update.
         memo: New memo text.
         payee_name: New payee name.
+        payee_id: Existing YNAB payee ID. For account transfers, use the
+            destination account's transfer payee ID.
         amount: New amount in dollars (outflows are negative). Converted to
             milliunits internally.
         txn_date: New ISO date string (YYYY-MM-DD).
@@ -739,11 +940,16 @@ async def update_transaction(
         approved: New approval state.
         category_id: New category ID.
     """
+    if payee_name is not None and payee_id is not None:
+        raise ValueError("update_transaction accepts payee_name or payee_id, not both.")
+
     supplied: Dict[str, Any] = {}
     if memo is not None:
         supplied["memo"] = memo
     if payee_name is not None:
         supplied["payee_name"] = payee_name
+    if payee_id is not None:
+        supplied["payee_id"] = payee_id
     if amount is not None:
         supplied["amount"] = int(round(amount * 1000))
     if txn_date is not None:
@@ -773,7 +979,7 @@ async def update_transaction(
         raise ValueError(
             "update_transaction requires at least one field to update "
             "(memo, payee_name, amount, txn_date, flag_color, cleared, "
-            "approved, or category_id)."
+            "approved, payee_id, or category_id)."
         )
 
     async with await _s.get_ynab_client() as client:
@@ -788,6 +994,7 @@ async def update_transaction(
     field_labels = {
         "memo": "Memo",
         "payee_name": "Payee",
+        "payee_id": "Payee ID",
         "amount": "Amount",
         "var_date": "Date",
         "flag_color": "Flag",
@@ -895,8 +1102,8 @@ async def get_transactions_by_category(
     if not transactions:
         return markdown + "_No transactions found for this category._\n"
 
-    headers = ["ID", "Date", "Account", "Amount", "Payee", "Status", "Memo"]
-    align = ["left", "left", "left", "right", "left", "left", "left"]
+    headers = ["ID", "Date", "Account", "Amount", "Cleared", "Payee", "Status", "Memo"]
+    align = ["left", "left", "left", "right", "left", "left", "left", "left"]
     rows = [_get_transaction_row(txn, account_map, "both") for txn in transactions]
 
     markdown += _build_markdown_table(rows, headers, align)

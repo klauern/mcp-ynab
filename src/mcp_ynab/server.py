@@ -146,12 +146,14 @@ async def _resolve_budget_id(client: ApiClient, ctx: Optional[Context]) -> str:
 # are bound above so the submodules can resolve them via `server.<name>`.
 from . import prompts  # noqa: E402, F401
 from . import resources  # noqa: E402, F401
-from .tools import budgeting, preferences, transactions  # noqa: E402, F401
+from .tools import budgeting, code_mode, preferences, transactions  # noqa: E402, F401
 
 # Re-export tool and resource callables so `server.<tool>(...)` works for
 # tests and downstream code. The decorators above are what register the
 # tools with `mcp`; these imports just bind the names on the server module.
 from .resources import (  # noqa: E402, F401
+    get_code_mode_examples,
+    get_code_mode_stubs,
     get_cached_categories,
     get_current_month_resource,
     get_month_resource,
@@ -177,6 +179,7 @@ from .tools.budgeting import (  # noqa: E402, F401
     rename_payee,
     set_preferred_budget_id,
     spending_by_category,
+    update_category,
 )
 from .tools.budgeting import (  # noqa: E402, F401
     spending_by_payee as spending_by_payee_tool,
@@ -187,6 +190,7 @@ from .tools.preferences import (  # noqa: E402, F401
     set_api_key,
     set_preference,
 )
+from .tools.code_mode import execute, search  # noqa: E402, F401
 from .tools.transactions import (  # noqa: E402, F401
     _CategoryChoice,
     _PostConfirmation,
@@ -203,6 +207,8 @@ from .tools.transactions import (  # noqa: E402, F401
     categorize_transaction,
     create_transaction,
     delete_transaction,
+    find_account_transaction_subset_matches,
+    get_account_reconciliation_profile,
     get_scheduled_transactions,
     get_transactions,
     get_transactions_by_category,
@@ -219,3 +225,86 @@ from .prompts import (  # noqa: E402, F401
     spending_by_payee,
     weekly_review,
 )
+
+_CODE_MODE_BOOTSTRAP_VISIBLE_TOOLS = frozenset(
+    {
+        "clear_api_key",
+        "get_preferences",
+        "ping",
+        "set_api_key",
+        "set_preference",
+        "set_preferred_budget_id",
+    }
+)
+_CODE_MODE_REPLACEMENT_VISIBLE_TOOLS = (
+    frozenset({"search", "execute"}) | _CODE_MODE_BOOTSTRAP_VISIBLE_TOOLS
+)
+_list_tools_without_code_mode_filter = mcp.list_tools
+_call_tool_without_code_mode_filter = mcp.call_tool
+
+
+def _code_mode_replacement_enabled() -> bool:
+    """Return whether the external tool surface should be filtered."""
+    return bool(ynab_resources.preferences.code_mode_replace_tools)
+
+
+async def _list_tools_with_code_mode_filter():
+    """List tools, optionally hiding direct tools from the external MCP surface."""
+    tools = await _list_tools_without_code_mode_filter()
+    if not _code_mode_replacement_enabled():
+        return tools
+    return [tool for tool in tools if tool.name in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS]
+
+
+async def _call_tool_with_code_mode_filter(name: str, arguments: dict):
+    """Reject direct calls to hidden tools while preserving the internal registry."""
+    if _code_mode_replacement_enabled() and name not in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS:
+        raise ValueError(
+            f"Tool {name!r} is hidden because code_mode_replace_tools is enabled. "
+            "Use execute instead."
+        )
+    return await _call_tool_without_code_mode_filter(name, arguments)
+
+
+mcp.list_tools = _list_tools_with_code_mode_filter
+mcp.call_tool = _call_tool_with_code_mode_filter
+
+# The instance-attribute patches above are exercised by tests that call
+# mcp.list_tools()/mcp.call_tool() directly.  The MCP protocol layer routes
+# through _mcp_server.request_handlers, which captured the original bound
+# methods at _setup_handlers() time and never observes instance-attribute
+# shadows.  Patch the request_handlers dict so the protocol path is filtered.
+_original_list_tools_rh = mcp._mcp_server.request_handlers[types.ListToolsRequest]
+_original_call_tool_rh = mcp._mcp_server.request_handlers[types.CallToolRequest]
+
+
+async def _filtered_list_tools_rh(req: types.ListToolsRequest) -> types.ServerResult:
+    result = await _original_list_tools_rh(req)
+    if not _code_mode_replacement_enabled():
+        return result
+    filtered = [t for t in result.root.tools if t.name in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS]
+    return types.ServerResult(types.ListToolsResult(tools=filtered))
+
+
+async def _filtered_call_tool_rh(req: types.CallToolRequest) -> types.ServerResult:
+    name = req.params.name
+    if _code_mode_replacement_enabled() and name not in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS:
+        return types.ServerResult(
+            types.CallToolResult(
+                content=[
+                    types.TextContent(
+                        type="text",
+                        text=(
+                            f"Tool {name!r} is hidden because code_mode_replace_tools is enabled. "
+                            "Use execute instead."
+                        ),
+                    )
+                ],
+                isError=True,
+            )
+        )
+    return await _original_call_tool_rh(req)
+
+
+mcp._mcp_server.request_handlers[types.ListToolsRequest] = _filtered_list_tools_rh
+mcp._mcp_server.request_handlers[types.CallToolRequest] = _filtered_call_tool_rh

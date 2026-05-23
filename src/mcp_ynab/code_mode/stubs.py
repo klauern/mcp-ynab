@@ -1,0 +1,97 @@
+"""Generate Python type stubs for the Code Mode ``ynab`` namespace."""
+
+from __future__ import annotations
+
+import inspect
+from typing import Any
+
+from .runner import _is_mutating_tool
+
+
+def _annotation_name(annotation: Any) -> str:
+    if annotation is inspect.Signature.empty:
+        return "Any"
+    text = getattr(annotation, "__name__", None)
+    if text:
+        return text
+    return str(annotation).replace("typing.", "")
+
+
+def _format_param(param: inspect.Parameter) -> str:
+    annotation = _annotation_name(param.annotation)
+    if param.default is inspect.Parameter.empty:
+        return f"{param.name}: {annotation}"
+    return f"{param.name}: {annotation} = ..."
+
+
+def _format_tool_stub(tool: Any) -> list[str]:
+    sig = inspect.signature(tool.fn)
+    params = [_format_param(param) for param in sig.parameters.values() if param.name != "ctx"]
+    method_params = ", ".join(["self", *params])
+    return_type = _annotation_name(sig.return_annotation)
+    description = (tool.description or "").replace('"""', '\\"\\"\\"').strip()
+    if description:
+        return [
+            f"    async def {tool.name}({method_params}) -> {return_type}:",
+            f'        """{description}"""',
+            "        ...",
+        ]
+    return [f"    async def {tool.name}({method_params}) -> {return_type}: ..."]
+
+
+def _iter_mcp_tools(mcp: Any) -> list[tuple[str, Any]]:
+    # FastMCP has no stable public tool-enumeration API yet; isolate the
+    # private access here so an mcp upgrade only needs one fix point.
+    return sorted(mcp._tool_manager._tools.items())
+
+
+def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:
+    """Return a ``.pyi`` view of registered tools under ``ynab.read``/``ynab.write``."""
+
+    read_lines: list[str] = []
+    write_lines: list[str] = []
+    for name, tool in _iter_mcp_tools(mcp):
+        if name in {"execute", "search"}:
+            continue
+        target = write_lines if _is_mutating_tool(tool) else read_lines
+        target.extend(_format_tool_stub(tool))
+        target.append("")
+
+    lines = [
+        "from typing import Any",
+        "",
+        "class ReadNamespace:",
+        *(read_lines or ["    pass"]),
+        "class WriteNamespace:",
+        *(write_lines if mutations_enabled else ["    pass"]),
+        "class YNABNamespace:",
+        "    read: ReadNamespace",
+        "    write: WriteNamespace",
+        "ynab: YNABNamespace",
+        "LIMIT: int",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def build_spec(mcp: Any, *, mutations_enabled: bool = True) -> list[dict]:
+    """Return a structured catalog of available tools for the search sandbox."""
+    entries = []
+    for name, tool in _iter_mcp_tools(mcp):
+        if name in {"execute", "search"}:
+            continue
+        namespace = "write" if _is_mutating_tool(tool) else "read"
+        if not mutations_enabled and namespace == "write":
+            continue
+        sig = inspect.signature(tool.fn)
+        params = [_format_param(p) for p in sig.parameters.values() if p.name != "ctx"]
+        entries.append(
+            {
+                "name": name,
+                "namespace": namespace,
+                "signature": ", ".join(params),
+                "doc": (tool.description or "").strip(),
+                "returns": _annotation_name(sig.return_annotation),
+            }
+        )
+    return entries

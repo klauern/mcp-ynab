@@ -101,6 +101,32 @@ class Preferences(BaseModel):
         default=True,
         description="Whether mutating tools must elicit a confirmation before posting.",
     )
+    code_mode_enabled: bool = Field(
+        default=True,
+        description="Whether the Code Mode search and execute tools are enabled.",
+    )
+    code_mode_mutations_enabled: bool = Field(
+        default=False,
+        description="Whether Code Mode may call mutating YNAB helpers.",
+    )
+    code_mode_replace_tools: bool = Field(
+        default=True,
+        description=(
+            "When True (default), only search and execute are exposed as tools. "
+            "Set False to restore the full direct-tool surface (escape hatch)."
+        ),
+    )
+    code_mode_timeout_s: float = Field(
+        default=10.0,
+        gt=0,
+        le=60.0,
+        description="Maximum Code Mode execution timeout, in seconds.",
+    )
+    code_mode_max_output_chars: int = Field(
+        default=8192,
+        ge=0,
+        description="Maximum captured stdout characters returned from Code Mode.",
+    )
 
 
 def _is_optional_field(field_name: str) -> bool:
@@ -128,6 +154,11 @@ def _coerce_field_value(field_name: str, raw: str) -> Any:
             return int(raw)
         except ValueError as exc:
             raise ValueError(f"Value {raw!r} for {field_name} is not an integer.") from exc
+    if annotation is float or annotation == Optional[float]:
+        try:
+            return float(raw)
+        except ValueError as exc:
+            raise ValueError(f"Value {raw!r} for {field_name} is not a number.") from exc
     return raw
 
 

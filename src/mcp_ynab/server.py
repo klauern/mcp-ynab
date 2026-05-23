@@ -179,6 +179,7 @@ from .tools.budgeting import (  # noqa: E402, F401
     rename_payee,
     set_preferred_budget_id,
     spending_by_category,
+    update_category,
 )
 from .tools.budgeting import (  # noqa: E402, F401
     spending_by_payee as spending_by_payee_tool,

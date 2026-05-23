@@ -13,8 +13,10 @@ from typing import Any, Dict, List, Literal, Optional, cast
 from mcp.server.fastmcp import Context
 from ynab.models.account import Account
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
+from ynab.models.patch_category_wrapper import PatchCategoryWrapper
 from ynab.models.patch_payee_wrapper import PatchPayeeWrapper
 from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
+from ynab.models.save_category import SaveCategory
 from ynab.models.save_payee import SavePayee
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 
@@ -289,6 +291,45 @@ async def move_money(
         f"**{getattr(src, 'name', from_category_id)}** → "
         f"**{getattr(dst, 'name', to_category_id)}** ({month})."
     )
+
+
+@_s.mcp.tool(annotations=_s.IDEMPOTENT_MUTATING_TOOL)
+async def update_category(
+    budget_id: str,
+    category_id: str,
+    name: Optional[str] = None,
+    note: Optional[str] = None,
+    category_group_id: Optional[str] = None,
+) -> str:
+    """Rename a category, update its note, or move it to a different category group.
+
+    At least one of `name`, `note`, or `category_group_id` must be provided.
+    Idempotent: applying the same values twice leaves the category unchanged.
+
+    Args:
+        budget_id: The YNAB budget ID.
+        category_id: The ID of the category to update.
+        name: New display name for the category (optional).
+        note: New note/memo for the category (optional).
+        category_group_id: ID of the category group to move the category into (optional).
+    """
+    if name is None and note is None and category_group_id is None:
+        raise ValueError("At least one of name, note, or category_group_id must be provided.")
+    wrapper = PatchCategoryWrapper(
+        category=SaveCategory(name=name, note=note, category_group_id=category_group_id)
+    )
+    async with await _s.get_ynab_client() as client:
+        cats = _s.CategoriesApi(client)
+        response = cats.update_category(budget_id, category_id, wrapper)
+        cat = response.data.category
+    parts: list[str] = []
+    if name is not None:
+        parts.append(f"renamed to **{cat.name}**")
+    if note is not None:
+        parts.append(f"note set to `{cat.note}`")
+    if category_group_id is not None:
+        parts.append(f"moved to group `{category_group_id}`")
+    return f"Category `{category_id}` updated: {', '.join(parts)}."
 
 
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)

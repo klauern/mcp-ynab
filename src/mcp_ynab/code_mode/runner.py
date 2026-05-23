@@ -122,6 +122,36 @@ def _truncate_result(result: Any, max_chars: int) -> tuple[Any, bool]:
     )
 
 
+class _BoundedStringIO(io.TextIOBase):
+    """TextIO that stops accepting writes once ``max_chars`` is reached.
+
+    Keeps memory usage bounded during execution rather than truncating
+    the full buffer after the fact.
+    """
+
+    def __init__(self, max_chars: int) -> None:
+        self._buf = io.StringIO()
+        self._remaining = max_chars
+        self.truncated = False
+
+    def write(self, s: str) -> int:
+        if self._remaining <= 0:
+            self.truncated = True
+            return len(s)
+        if len(s) > self._remaining:
+            self._buf.write(s[: self._remaining])
+            self._remaining = 0
+            self.truncated = True
+        else:
+            self._buf.write(s)
+            self._remaining -= len(s)
+        return len(s)
+
+    def getvalue(self) -> str:
+        val = self._buf.getvalue()
+        return val + "\n[... truncated]" if self.truncated else val
+
+
 def _audit_code(code: str, *, mutations_enabled: bool) -> ast.Module:
     try:
         tree = ast.parse(code, mode="exec")
@@ -221,7 +251,7 @@ async def run_code(
 ) -> CodeModeResult:
     """Audit and execute ``code`` as the body of an async ``__main__`` function."""
 
-    logs_buffer = io.StringIO()
+    logs_buffer = _BoundedStringIO(max_output_chars)
     try:
         wrapped_code = _wrap_code(code)
         _audit_code(wrapped_code, mutations_enabled=mutations_enabled)
@@ -234,8 +264,10 @@ async def run_code(
         exec(compiled, sandbox_globals, sandbox_globals)
         main = sandbox_globals["__main__"]
         with contextlib.redirect_stdout(logs_buffer):
+            # Soft timeout: cannot interrupt synchronous blocking code. See mcp-ynab-fkv.
             result = await asyncio.wait_for(main(), timeout=timeout_s)
-        logs, logs_truncated = _truncate(logs_buffer.getvalue(), max_output_chars)
+        logs = logs_buffer.getvalue()
+        logs_truncated = logs_buffer.truncated
         result, result_truncated = _truncate_result(result, max_output_chars)
         return CodeModeResult(
             ok=True,

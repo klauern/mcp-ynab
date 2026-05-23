@@ -119,7 +119,8 @@ async def test_run_code_truncates_stdout() -> None:
     result = await run_code('print("abcdef")\nreturn 1', mcp=_mcp(), max_output_chars=5)
     assert result.ok is True
     assert result.truncated is True
-    assert len(result.logs) == 5
+    assert result.logs.startswith("abcde")
+    assert "[... truncated]" in result.logs
 
 
 @pytest.mark.asyncio

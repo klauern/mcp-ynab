@@ -123,8 +123,11 @@ after mutation mode and any product-level confirmation flow are enabled.
 
 The current runner is in-process and intentionally small. It blocks imports,
 common dynamic execution escape hatches, dunder access, f-strings, and
-`with`/`async with` blocks. It runs with a limited builtins allow-list and an
-`asyncio.wait_for` timeout.
+`with`/`async with` blocks. It runs with a limited builtins allow-list and a soft `asyncio.wait_for`
+timeout. **This timeout is cooperative and cannot interrupt synchronous
+blocking or CPU-bound code** (e.g. `time.sleep`, tight loops). Blocking
+user code will stall the server until the event loop regains control.
+See issue `mcp-ynab-fkv` for the tracked fix.
 
 This is defense in depth, not a Python security boundary. Enable Code Mode only
 for trusted MCP clients and trusted prompt sources. Do not treat it as a

@@ -39,12 +39,18 @@ def _format_tool_stub(tool: Any) -> list[str]:
     return [f"    async def {tool.name}({method_params}) -> {return_type}: ..."]
 
 
+def _iter_mcp_tools(mcp: Any) -> list[tuple[str, Any]]:
+    # FastMCP has no stable public tool-enumeration API yet; isolate the
+    # private access here so an mcp upgrade only needs one fix point.
+    return sorted(mcp._tool_manager._tools.items())
+
+
 def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:
     """Return a ``.pyi`` view of registered tools under ``ynab.read``/``ynab.write``."""
 
     read_lines: list[str] = []
     write_lines: list[str] = []
-    for name, tool in sorted(mcp._tool_manager._tools.items()):
+    for name, tool in _iter_mcp_tools(mcp):
         if name == "ynab_code_execute":
             continue
         target = write_lines if _is_mutating_tool(tool) else read_lines

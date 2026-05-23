@@ -72,7 +72,7 @@ multi-step YNAB workflows. It is disabled by default and controlled through the
 preferences `code_mode_enabled`, `code_mode_mutations_enabled`, and
 `code_mode_replace_tools`.
 
-See [src/mcp_ynab/code_mode/README.md](/Users/klauer/dev/python/mcp-ynab/src/mcp_ynab/code_mode/README.md)
+See [src/mcp_ynab/code_mode/README.md](src/mcp_ynab/code_mode/README.md)
 for usage, wiring instructions, and runner limits.
 
 ## Development

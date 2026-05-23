@@ -5,6 +5,7 @@ attribute lookup on the `server` module so tests that do
 `monkeypatch.setattr(server, "ynab_resources", ...)` propagate correctly.
 """
 
+from importlib.resources import files as _resource_files
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +50,12 @@ def get_code_mode_examples() -> list[types.TextContent]:
 
 
 def _read_code_mode_examples() -> str:
+    # Primary: package data (works in installed wheel via importlib.resources)
+    try:
+        return _resource_files("mcp_ynab.code_mode").joinpath("examples.md").read_text("utf-8")
+    except (FileNotFoundError, TypeError, ModuleNotFoundError):
+        pass
+    # Fallback: repo-relative paths for development without editable install
     candidates = [
         Path(__file__).resolve().parents[2] / "docs" / "code-mode-examples.md",
         Path.cwd() / "docs" / "code-mode-examples.md",
@@ -56,7 +63,6 @@ def _read_code_mode_examples() -> str:
     for path in candidates:
         if path.is_file():
             return path.read_text(encoding="utf-8")
-
     searched = ", ".join(str(path) for path in candidates)
     raise FileNotFoundError(f"Code Mode examples file not found; searched: {searched}")
 

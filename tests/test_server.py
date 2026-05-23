@@ -247,6 +247,11 @@ def test_code_mode_examples_resource_uses_current_namespaces() -> None:
 def test_code_mode_examples_missing_file_raises_specific_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Fail the importlib.resources primary path
+    def _raise(*a, **kw):
+        raise FileNotFoundError("simulated missing package data")
+    monkeypatch.setattr(server.resources, "_resource_files", _raise)
+    # Fail the filesystem fallback paths
     original_is_file = Path.is_file
     monkeypatch.setattr(server.resources.Path, "cwd", lambda: Path("/missing-cwd"))
     monkeypatch.setattr(

@@ -53,7 +53,7 @@ return await ynab.read.get_budgets()
 
 ### 3. Restore the full tool surface (optional)
 To access all ~34 direct YNAB tools, set the escape-hatch preference:
-```
+```text
 set_preference: code_mode_replace_tools = false
 ```
 

@@ -66,9 +66,57 @@ task dev                 # dev mode + MCP Inspector in the browser
 
 ## Tools and resources
 
-The server exposes the following over MCP:
+By default, the public MCP tool surface is intentionally small:
 
-**Read-only tools**
+| Tool | Purpose |
+| ---- | ------- |
+| `search` | Discover available YNAB operations without live API access |
+| `execute` | Run a short Python snippet against the live YNAB API |
+| `ping` | Health check the server |
+| `get_preferences` | Inspect server preferences |
+| `set_preference` | Update preferences such as mutation or escape-hatch settings |
+| `set_api_key` | Store a YNAB API key in the OS keychain |
+| `clear_api_key` | Remove the stored YNAB API key |
+| `set_preferred_budget_id` | Cache a preferred budget ID for default-targeted calls |
+
+Use `search` to discover operations:
+
+```python
+return [
+    {"name": tool["name"], "description": tool["description"]}
+    for tool in spec
+    if "category" in tool["name"]
+]
+```
+
+Then call the operation through `execute`:
+
+```python
+categories = await ynab.read.get_categories()
+return [
+    {"name": category.name, "balance": category.balance}
+    for group in categories
+    for category in group.categories[:LIMIT]
+]
+```
+
+Mutating operations live under `ynab.write.*` and require
+`code_mode_mutations_enabled=true`:
+
+```python
+result = await ynab.write.bulk_categorize(assignments=assignments)
+return result
+```
+
+The underlying direct tools still exist in the internal FastMCP registry so
+Code Mode can dispatch through `ynab.read.*`, generate stubs, and build the
+search catalog. They are hidden from the public tool list by default. Set
+`code_mode_replace_tools=false` to restore the full direct-tool surface as an
+escape hatch.
+
+Representative internal direct tools include:
+
+**Read-only internal tools**
 
 | Tool | Purpose |
 | ---- | ------- |
@@ -79,7 +127,7 @@ The server exposes the following over MCP:
 | `get_transactions_needing_attention` | Filter for uncategorized / unapproved transactions |
 | `get_categories` | All categories in a budget grouped by category group |
 
-**Mutating tools**
+**Mutating internal tools**
 
 | Tool | Purpose |
 | ---- | ------- |

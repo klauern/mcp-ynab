@@ -185,7 +185,31 @@ async def test_code_mode_tools_registered() -> None:
 
 
 @pytest.mark.asyncio
-async def test_code_mode_replace_tools_filters_external_tool_surface(
+async def test_blank_preferences_default_to_code_mode_public_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences()),
+    )
+
+    names = {tool.name for tool in await server.mcp.list_tools()}
+
+    assert names == {
+        "search",
+        "execute",
+        "clear_api_key",
+        "get_preferences",
+        "ping",
+        "set_api_key",
+        "set_preference",
+        "set_preferred_budget_id",
+    }
+
+
+@pytest.mark.asyncio
+async def test_code_mode_replace_tools_filters_protocol_tool_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -194,7 +218,9 @@ async def test_code_mode_replace_tools_filters_external_tool_surface(
         SimpleNamespace(preferences=Preferences(code_mode_replace_tools=True)),
     )
 
-    names = {tool.name for tool in await server.mcp.list_tools()}
+    handler = server.mcp._mcp_server.request_handlers[server.types.ListToolsRequest]
+    result = await handler(server.types.ListToolsRequest())
+    names = {tool.name for tool in result.root.tools}
 
     assert names == {
         "search",
@@ -240,6 +266,30 @@ async def test_code_mode_replace_tools_rejects_direct_hidden_tool_calls(
 
     with pytest.raises(ValueError, match="code_mode_replace_tools"):
         await server.mcp.call_tool("get_transactions", {})
+
+
+@pytest.mark.asyncio
+async def test_code_mode_replace_tools_rejects_protocol_hidden_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=True)),
+    )
+
+    handler = server.mcp._mcp_server.request_handlers[server.types.CallToolRequest]
+    result = await handler(
+        server.types.CallToolRequest(
+            params=server.types.CallToolRequestParams(
+                name="get_transactions",
+                arguments={},
+            )
+        )
+    )
+
+    assert result.root.isError is True
+    assert "code_mode_replace_tools" in result.root.content[0].text
 
 
 def test_code_mode_examples_resource_uses_current_namespaces() -> None:

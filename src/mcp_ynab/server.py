@@ -249,7 +249,7 @@ def _code_mode_replacement_enabled() -> bool:
 
 
 async def _list_tools_with_code_mode_filter():
-    """List tools, optionally hiding direct tools from the external MCP surface."""
+    """List the compressed public surface while keeping direct tools registered internally."""
     tools = await _list_tools_without_code_mode_filter()
     if not _code_mode_replacement_enabled():
         return tools
@@ -257,7 +257,7 @@ async def _list_tools_with_code_mode_filter():
 
 
 async def _call_tool_with_code_mode_filter(name: str, arguments: dict):
-    """Reject direct calls to hidden tools while preserving the internal registry."""
+    """Reject public calls to hidden direct tools while preserving internal dispatch."""
     if _code_mode_replacement_enabled() and name not in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS:
         raise ValueError(
             f"Tool {name!r} is hidden because code_mode_replace_tools is enabled. "
@@ -269,6 +269,12 @@ async def _call_tool_with_code_mode_filter(name: str, arguments: dict):
 mcp.list_tools = _list_tools_with_code_mode_filter
 mcp.call_tool = _call_tool_with_code_mode_filter
 
+# Code Mode compresses the public MCP surface, but the underlying FastMCP
+# registry intentionally remains populated. The `ynab.read.*`/`ynab.write.*`
+# proxy, generated stubs, and search catalog all dispatch through that internal
+# registry, while external clients see only search, execute, and bootstrap tools
+# unless `code_mode_replace_tools=false`.
+#
 # The instance-attribute patches above are exercised by tests that call
 # mcp.list_tools()/mcp.call_tool() directly.  The MCP protocol layer routes
 # through _mcp_server.request_handlers, which captured the original bound

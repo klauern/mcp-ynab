@@ -1,7 +1,7 @@
 """In-process Code Mode runner.
 
-This runner is an opt-in convenience layer, not a Python security boundary.
-It rejects common escape hatches before running snippets under a small
+This runner is a convenience layer, not a Python security boundary. It rejects
+common escape hatches before running snippets under a small
 builtins allow-list and a gated ``ynab.read`` / ``ynab.write`` proxy.
 """
 

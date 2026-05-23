@@ -1,7 +1,7 @@
-# Code Mode for mcp-ynab - Working Notebook
+# Code Mode for mcp-ynab - Current Architecture
 
-> **Status:** MVP implementation in progress.
-> **Date:** 2026-05-22
+> **Status:** Implemented as the default public MCP surface; subprocess hardening remains future work.
+> **Date:** 2026-05-23
 > **Author:** Claude (Opus 4.7) for @klauern
 > **Inspired by:** Cloudflare's "Code Mode" series and the official `@cloudflare/codemode` package.
 
@@ -11,25 +11,29 @@
 
 This document started as the pre-implementation research plan. Keep the research
 sections below as design context, but treat this top section as the current
-working notebook for the branch.
+architecture.
 
 ### Implemented in the MVP branch
 
 - Code Mode preferences exist: `code_mode_enabled`,
   `code_mode_mutations_enabled`, `code_mode_replace_tools`,
   `code_mode_timeout_s`, and `code_mode_max_output_chars`.
-- `execute` is registered as the single execution tool.
+- `search` and `execute` are registered as the compressed Code Mode tool
+  surface.
 - The runner executes a Python snippet body under an in-process AST audit,
   captures stdout, enforces a timeout, and returns a structured result.
+- Defaults are flipped for the public interface:
+  `code_mode_enabled=true`, `code_mode_replace_tools=true`, and
+  `code_mode_mutations_enabled=false`.
 - The tool proxy exposes the current namespace shape: `ynab.read.*` for
   read-only tools and `ynab.write.*` for mutating tools.
 - `ynab://code-mode/stubs` generates Python stubs from the current FastMCP
   registry.
 - `ynab://code-mode/examples` serves curated examples from
-  `docs/code-mode-examples.md`.
+  `src/mcp_ynab/code_mode/examples.md` with a mirrored docs copy.
 - `code_mode_replace_tools=true` filters the external `list_tools` and direct
   `call_tool` surface down to Code Mode plus bootstrap helpers while leaving
-  the internal registry intact for the proxy.
+  the internal FastMCP registry intact for the proxy, stubs, and search catalog.
 
 ### Still open
 
@@ -37,9 +41,9 @@ working notebook for the branch.
   security boundary. Subprocess isolation and OS resource limits remain future
   work.
 - Replacement-mode policy: the visible bootstrap tool set may need adjustment
-  after real client usage. Current visible tools are `execute`,
-  `get_preferences`, `set_preference`, `set_api_key`, `clear_api_key`,
-  `set_preferred_budget_id`, `get_budgets`, and `ping`.
+  after real client usage. Current visible tools are `search`, `execute`,
+  `ping`, `get_preferences`, `set_preference`, `set_api_key`, `clear_api_key`,
+  and `set_preferred_budget_id`.
 - Stub quality: generated return types and model details are useful enough for
   discovery, but not yet a complete SDK reference.
 - More examples: add workflow-specific snippets as real usage uncovers the
@@ -61,9 +65,15 @@ working notebook for the branch.
 
 ## 1. Executive summary
 
-**Code Mode** is a pattern that swaps a large MCP tool surface for a single `execute` tool plus a typed SDK delivered as a resource. The LLM writes a short async function that calls the SDK; the host sandbox runs it and returns the result. Cloudflare reports **32–99.9% input-token reduction** depending on workload, plus higher reliability for multi-step workflows because the model is writing real code rather than chaining tool calls through its decoder.
+**Code Mode** is a pattern that swaps a large MCP tool surface for a small
+`search`/`execute` surface plus a typed SDK delivered as a resource. The LLM
+writes short snippets that discover and call the SDK; the host sandbox runs them
+and returns the result. Cloudflare reports **32–99.9% input-token reduction**
+depending on workload, plus higher reliability for multi-step workflows because
+the model is writing real code rather than chaining tool calls through its
+decoder.
 
-For **mcp-ynab** — which currently exposes **33 tools and multiple resources**, many of them composable (`get_transactions` -> `bulk_categorize`, `get_categories` -> `assign_money`, etc.) — Code Mode is a strong fit for the *batch and orchestration* class of YNAB workflows. The MVP keeps Code Mode opt-in, builds on the existing `Preferences` subsystem, and separates read/write namespaces so mutation support can be enabled deliberately.
+For **mcp-ynab** — which keeps **33+ direct tools and multiple resources** registered internally, many of them composable (`get_transactions` -> `bulk_categorize`, `get_categories` -> `assign_money`, etc.) — Code Mode is a strong fit for the *batch and orchestration* class of YNAB workflows. The public MCP surface now defaults to Code Mode, builds on the existing `Preferences` subsystem, and separates read/write namespaces so mutation support can be enabled deliberately.
 
 ---
 
@@ -141,7 +151,12 @@ The transactions surface in particular is **deeply composable**:
 
 Every multi-step YNAB cleanup the user runs today pays the per-step LLM cost. Code Mode collapses these into one tool call whose body is, in many cases, ~15 lines of straight-line code.
 
-Token math for mcp-ynab (rough): the current 33 tool descriptions + parameter schemas sit at **~6–9k tokens** in any session that talks to this server. A Code Mode build would replace that with a single `execute` tool (~200 tokens) plus a once-fetched stubs resource (the user's client may cache it). Conservative estimate: **70–85%** reduction in this server's contribution to system-prompt cost, plus elimination of intermediate tool-result chatter.
+Token math for mcp-ynab (rough): the direct tool descriptions + parameter
+schemas sit at **~6–9k tokens** in any session that exposes the full direct
+surface. The default Code Mode surface replaces that with `search` and
+`execute` plus a once-fetched stubs resource (the user's client may cache it).
+Conservative estimate: **70–85%** reduction in this server's contribution to
+system-prompt cost, plus elimination of intermediate tool-result chatter.
 
 ---
 
@@ -174,15 +189,21 @@ Cloudflare's implementation depends on the Cloudflare Workers runtime: V8 isolat
 
 | Strategy | Description |
 | --- | --- |
-| **A. Augment** | Code Mode is opt-in; existing 33 tools stay registered. `code_mode_enabled=true` adds `execute`. |
+| **A. Augment** | Code Mode is additive; existing direct tools stay registered. `code_mode_enabled=true` adds `search` and `execute`. |
 | **B. Gate** | When `code_mode_enabled=true`, the server can hide the 33 underlying tools and expose Code Mode plus a tiny core (`get_budgets`, `ping`). Read-only and mutation tools are gated independently. |
 | **C. Replace** | Code Mode is the default interface once the gated path has been tested, with an escape hatch for direct tools while the feature stabilizes. |
 
-**Recommendation:** start at **A** (augment) on a feature branch so the in-process runner can be tested without disrupting the existing tool surface. Design toward **B** as the first supported default: read-only Code Mode can be enabled separately from mutating Code Mode, and mutation calls require an explicit additional opt-in. Once that split is working and tested, plan toward **C** as the long-term replacement path rather than preserving augment-only forever.
+**Current state:** **C** is the default public interface. Direct tools remain in
+the internal FastMCP registry because Code Mode dispatch, stubs, and search all
+depend on it. `code_mode_replace_tools=false` is the escape hatch for exposing
+the full direct-tool surface.
 
 ### 4.4 Discovery: one tool or two?
 
-Cloudflare uses `search` + `execute`. For mcp-ynab the *type stubs themselves* are small (33 functions ≈ 2–3KB of `.pyi`). We can ship them inline as part of the `execute` tool description, **eliminating the need for a separate discovery `search` tool**. Reconsider only if the surface ever grows past ~100 tools.
+Cloudflare uses `search` + `execute`. mcp-ynab now follows that two-tool
+pattern: `search` runs discovery snippets against a structured spec object with
+no live YNAB API access, and `execute` runs snippets against the live
+`ynab.read`/`ynab.write` namespace.
 
 Do not collapse permission scope into discovery scope. The implementation should maintain two generated tool namespaces:
 
@@ -216,12 +237,14 @@ Delivered as the MCP resource `ynab://code-mode/stubs` (mime-type `text/x-python
 
 | Item | Type | Purpose |
 | --- | --- | --- |
-| `code_mode_enabled: bool` | preference (epic `6ha`) | Off by default; enables read-only Code Mode |
+| `code_mode_enabled: bool` | preference | On by default; enables Code Mode tools |
 | `code_mode_mutations_enabled: bool` | preference | Off by default; enables `ynab.write.*` mutating calls inside Code Mode |
-| `code_mode_replace_tools: bool` | preference | Off by default for MVP; later hides direct tools after the gated path is tested |
+| `code_mode_replace_tools: bool` | preference | On by default; hides direct tools from the public surface while preserving them internally |
 | `code_mode_timeout_s: float` | preference | Default `10.0`, capped at `60.0` |
 | `code_mode_max_output_chars: int` | preference | Default `8192`; truncate captured stdout |
-| `execute(code: str, timeout: float \| None = None)` | tool | The one tool. `timeout` is per-call and capped by policy. Annotation is conservative whenever mutation mode is enabled. |
+| `search(code: str)` | tool | Runs a discovery snippet against the generated spec catalog. No live YNAB API access. |
+| `execute(code: str, timeout: float \| None = None)` | tool | Runs a live YNAB snippet. `timeout` is per-call and capped by policy. Annotation is conservative whenever mutation mode is enabled. |
+| Bootstrap tools | tools | `ping`, `get_preferences`, `set_preference`, `set_api_key`, `clear_api_key`, and `set_preferred_budget_id` remain visible by default. |
 | `ynab://code-mode/stubs` | resource | Returns generated `.pyi` for the current tool registry |
 | `ynab://code-mode/examples` | resource | Returns a curated in-tree set of worked examples (categorize-by-payee, monthly cleanup, etc.) |
 
@@ -308,6 +331,7 @@ Logging mirrors the pattern in `tools/transactions.py` — `logger.info("[code-m
 | `cmd.3` Runner + gated tool proxy (in-process) | AST audit, `_build_ynab_proxy`, read/write namespace gating, async run harness, per-call timeout, stdout capture | Implemented for MVP; subprocess hardening remains |
 | `cmd.4` `execute` MCP tool | Wire the runner into FastMCP; annotate; integration tests | Implemented |
 | `cmd.5` Examples resource | Curated worked examples in `docs/` or `examples/`, exposed through `ynab://code-mode/examples` | Implemented in `docs/code-mode-examples.md` |
+| `cmd.5b` `search` MCP tool | Add spec-catalog discovery tool and tests | Implemented |
 | `cmd.6` Sandbox hardening | Move runner to subprocess; `resource.setrlimit`; consider seccomp on Linux; revise threat model in this notebook | Open |
 | `cmd.7` Surface gating / replacement | After the gated runner works, hide direct tools behind a `code_mode_replace_tools` pref and plan toward Code Mode as the primary interface | Implemented for MVP |
 | `cmd.8` (optional) JS runner | Add `py-mini-racer` based JS runner as an alternative; only if Python-mode quality is insufficient | Deferred |
@@ -321,7 +345,8 @@ Each issue should land green tests + ruff clean + a focused commit (matches the 
 These decisions came out of the review of this plan and should guide the first implementation branch.
 
 1. **Sandbox tier for MVP:** use an in-process AST-whitelisted runner for the first branch, with read/write permission gating layered on top. Subprocess isolation remains a later hardening phase.
-2. **Default state:** keep Code Mode opt-in for now via preferences. The MVP should not enable it implicitly from the environment.
+2. **Default state:** Code Mode is enabled by default and replaces the public
+   direct-tool surface by default. Direct tools remain registered internally.
 3. **Mutation policy:** default to read-only Code Mode. Mutating calls require a separate opt-in through `code_mode_mutations_enabled`; if the AST audit sees `ynab.write.*` while mutations are disabled, reject the snippet before execution.
 4. **Timeout policy:** allow a per-call `timeout` argument, capped by the configured maximum.
 5. **Surface replacement:** plan toward full replacement after the gated implementation has been tested, using `code_mode_replace_tools` as the transition switch.

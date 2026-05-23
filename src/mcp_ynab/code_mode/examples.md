@@ -7,6 +7,17 @@ Python namespace:
 - `ynab.write.*` requires `code_mode_mutations_enabled=true`.
 - `LIMIT` is available for keeping returned data small (defaults to 100).
 
+Use `search` first when you need to discover available operations. `search`
+snippets inspect `spec` and cannot access live YNAB data:
+
+```python
+return [
+    {"name": tool["name"], "description": tool["description"]}
+    for tool in spec
+    if "transaction" in tool["name"]
+]
+```
+
 ## Read-only budget listing
 
 Use this first to confirm Code Mode can reach YNAB without changing anything.

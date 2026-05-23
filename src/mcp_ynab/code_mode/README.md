@@ -1,41 +1,45 @@
 # YNAB Code Mode
 
-Code Mode lets an MCP client call one tool, `execute`, with a short
-Python snippet instead of chaining many YNAB tools manually. The snippet runs as
+Code Mode is the default public interface for mcp-ynab. It gives MCP clients
+`search` for discovery and `execute` for running a short Python snippet instead
+of exposing every YNAB operation as a separate public tool. The snippet runs as
 the body of an async function and receives a small `ynab` namespace:
 
 - `ynab.read.*` contains read-only YNAB tools.
 - `ynab.write.*` contains mutating YNAB tools when mutation mode is enabled.
 - `LIMIT` is available as a default cap for small result sets.
 
-Code Mode is opt-in. It is useful for multi-step read, cleanup, and batch
-workflows where the agent needs loops, filtering, grouping, or conditional
-updates.
+It is useful for multi-step read, cleanup, and batch workflows where the agent
+needs loops, filtering, grouping, or conditional updates.
 
 ## Configure it
 
-Code Mode is enabled by default. If you need to disable it or customize its behavior,
-use the `set_preference` MCP tool:
+Code Mode is enabled by default. If you need to disable it or customize its
+behavior, use the `set_preference` MCP tool:
 
 ```text
 set_preference(name="code_mode_enabled", value="false")
 ```
 
-To enable read-only snippets (default when enabled): Mutating snippets require a separate opt-in:
+Read-only snippets are available by default. Mutating snippets require a
+separate opt-in:
 
 ```text
 set_preference(name="code_mode_mutations_enabled", value="true")
 ```
 
-The direct tool surface can also be hidden after Code Mode is enabled:
+The direct tool surface is hidden by default. To restore it as an escape hatch:
 
 ```text
-set_preference(name="code_mode_replace_tools", value="true")
+set_preference(name="code_mode_replace_tools", value="false")
 ```
 
 When `code_mode_replace_tools` is true, the public MCP tool list keeps only the
-bootstrap tools plus `search` and `execute`. The internal registry is still present
-so Code Mode can call the underlying tools.
+bootstrap tools plus `search` and `execute`: `ping`, `get_preferences`,
+`set_preference`, `set_api_key`, `clear_api_key`, and
+`set_preferred_budget_id`. The internal FastMCP registry is still populated so
+Code Mode can call the underlying tools, generate stubs, and build the search
+catalog.
 
 Related preferences:
 
@@ -46,15 +50,22 @@ Related preferences:
 
 ## Discover the API
 
+Call `search` with a snippet that inspects `spec`. Search has no live YNAB API
+access:
+
+```python
+return [tool for tool in spec if "transaction" in tool["name"]]
+```
+
 Clients should read these resources before generating snippets:
 
 - `ynab://code-mode/stubs`: generated Python type stubs for the current
   `ynab.read` and `ynab.write` namespaces.
 - `ynab://code-mode/examples`: curated snippets for common workflows.
 
-The stubs are generated from the FastMCP tool registry. If a new tool is added
-and registered with the server, it appears automatically in the relevant
-namespace unless it is `execute` itself.
+The stubs and search catalog are generated from the FastMCP tool registry. If a
+new tool is added and registered with the server, it appears automatically in
+the relevant namespace unless it is `search` or `execute` itself.
 
 ## Write snippets
 
@@ -109,12 +120,13 @@ placed under `ynab.read`; all others are placed under `ynab.write`.
 
 A client that prefers Code Mode should:
 
-1. Read `ynab://code-mode/stubs` and cache it for the current server version.
-2. Optionally read `ynab://code-mode/examples` for local prompting examples.
-3. Generate a Python function body that uses only `ynab.read.*` unless the user
+1. Use `search` to discover relevant operations.
+2. Read `ynab://code-mode/stubs` and cache it for the current server version.
+3. Optionally read `ynab://code-mode/examples` for local prompting examples.
+4. Generate a Python function body that uses only `ynab.read.*` unless the user
    has explicitly approved mutation mode.
-4. Call `execute(code=...)`.
-5. Inspect `ok`, `error`, `logs`, and `truncated` before acting on `result`.
+5. Call `execute(code=...)`.
+6. Inspect `ok`, `error`, `logs`, and `truncated` before acting on `result`.
 
 For write workflows, first do a read-only discovery snippet and show the planned
 changes to the user. Then run a second snippet that calls `ynab.write.*` only

@@ -265,3 +265,43 @@ async def _call_tool_with_code_mode_filter(name: str, arguments: dict):
 
 mcp.list_tools = _list_tools_with_code_mode_filter
 mcp.call_tool = _call_tool_with_code_mode_filter
+
+# The instance-attribute patches above are exercised by tests that call
+# mcp.list_tools()/mcp.call_tool() directly.  The MCP protocol layer routes
+# through _mcp_server.request_handlers, which captured the original bound
+# methods at _setup_handlers() time and never observes instance-attribute
+# shadows.  Patch the request_handlers dict so the protocol path is filtered.
+_original_list_tools_rh = mcp._mcp_server.request_handlers[types.ListToolsRequest]
+_original_call_tool_rh = mcp._mcp_server.request_handlers[types.CallToolRequest]
+
+
+async def _filtered_list_tools_rh(req: types.ListToolsRequest) -> types.ServerResult:
+    result = await _original_list_tools_rh(req)
+    if not _code_mode_replacement_enabled():
+        return result
+    filtered = [t for t in result.root.tools if t.name in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS]
+    return types.ServerResult(types.ListToolsResult(tools=filtered))
+
+
+async def _filtered_call_tool_rh(req: types.CallToolRequest) -> types.ServerResult:
+    name = req.params.name
+    if _code_mode_replacement_enabled() and name not in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS:
+        return types.ServerResult(
+            types.CallToolResult(
+                content=[
+                    types.TextContent(
+                        type="text",
+                        text=(
+                            f"Tool {name!r} is hidden because code_mode_replace_tools is enabled. "
+                            "Use execute instead."
+                        ),
+                    )
+                ],
+                isError=True,
+            )
+        )
+    return await _original_call_tool_rh(req)
+
+
+mcp._mcp_server.request_handlers[types.ListToolsRequest] = _filtered_list_tools_rh
+mcp._mcp_server.request_handlers[types.CallToolRequest] = _filtered_call_tool_rh

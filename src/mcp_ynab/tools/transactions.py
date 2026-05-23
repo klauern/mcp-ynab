@@ -9,6 +9,7 @@ monkeypatches propagate.
 """
 
 import difflib
+import itertools
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
@@ -469,6 +470,174 @@ def _find_transaction_by_id(
         ):
             return txn
     return None
+
+
+def _txn_date_iso(txn: Any) -> str:
+    txn_date = getattr(txn, "var_date", None) or getattr(txn, "date", None)
+    if hasattr(txn_date, "strftime"):
+        return txn_date.strftime("%Y-%m-%d")
+    return str(txn_date or "")
+
+
+def _txn_to_reconciliation_row(txn: Any) -> Dict[str, Any]:
+    amount_milliunits = int(getattr(txn, "amount", 0) or 0)
+    return {
+        "id": getattr(txn, "id", None),
+        "date": _txn_date_iso(txn),
+        "amount_milliunits": amount_milliunits,
+        "amount": amount_milliunits / 1000,
+        "cleared": getattr(txn, "cleared", None),
+        "approved": getattr(txn, "approved", None),
+        "payee_name": getattr(txn, "payee_name", None),
+        "category_name": getattr(txn, "category_name", None),
+        "memo": getattr(txn, "memo", None),
+        "account_id": getattr(txn, "account_id", None),
+        "transfer_account_id": getattr(txn, "transfer_account_id", None),
+        "transfer_transaction_id": getattr(txn, "transfer_transaction_id", None),
+        "matched_transaction_id": getattr(txn, "matched_transaction_id", None),
+        "import_id": getattr(txn, "import_id", None),
+    }
+
+
+def _sum_milliunits(rows: List[Dict[str, Any]]) -> int:
+    return sum(int(row["amount_milliunits"]) for row in rows)
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def get_account_reconciliation_profile(
+    budget_id: str,
+    account_id: str,
+    since_date: Annotated[
+        Optional[date],
+        Field(description="ISO date (YYYY-MM-DD) to fetch transactions since. Defaults to all."),
+    ] = None,
+    cleared: Annotated[
+        Optional[Literal["cleared", "uncleared", "reconciled"]],
+        Field(description="Optional cleared status filter."),
+    ] = None,
+    include_transfers: bool = True,
+    limit: Annotated[int, Field(description="Maximum transaction rows to include.")] = 200,
+) -> Dict[str, Any]:
+    """Return structured account balance and transaction status totals for reconciliation."""
+    async with await _s.get_ynab_client() as client:
+        accounts_api = _s.AccountsApi(client)
+        transactions_api = _s.TransactionsApi(client)
+
+        account = accounts_api.get_account_by_id(budget_id, account_id).data.account
+        response = transactions_api.get_transactions_by_account(
+            budget_id, account_id, since_date=since_date
+        )
+
+    rows = [_txn_to_reconciliation_row(txn) for txn in response.data.transactions]
+    if cleared is not None:
+        rows = [row for row in rows if row["cleared"] == cleared]
+    if not include_transfers:
+        rows = [
+            row
+            for row in rows
+            if not row["transfer_account_id"] and not row["transfer_transaction_id"]
+        ]
+
+    totals_by_cleared: Dict[str, int] = {"cleared": 0, "uncleared": 0, "reconciled": 0}
+    counts_by_cleared: Dict[str, int] = {"cleared": 0, "uncleared": 0, "reconciled": 0}
+    for row in rows:
+        status = row["cleared"]
+        if status in totals_by_cleared:
+            totals_by_cleared[status] += int(row["amount_milliunits"])
+            counts_by_cleared[status] += 1
+
+    balance_milliunits = int(getattr(account, "balance", 0) or 0)
+    cleared_balance_milliunits = int(getattr(account, "cleared_balance", 0) or 0)
+    uncleared_balance_milliunits = int(getattr(account, "uncleared_balance", 0) or 0)
+    return {
+        "account": {
+            "id": getattr(account, "id", account_id),
+            "name": getattr(account, "name", None),
+            "type": getattr(account, "type", None),
+            "on_budget": getattr(account, "on_budget", None),
+            "closed": getattr(account, "closed", None),
+            "deleted": getattr(account, "deleted", None),
+            "balance_milliunits": balance_milliunits,
+            "balance": balance_milliunits / 1000,
+            "cleared_balance_milliunits": cleared_balance_milliunits,
+            "cleared_balance": cleared_balance_milliunits / 1000,
+            "uncleared_balance_milliunits": uncleared_balance_milliunits,
+            "uncleared_balance": uncleared_balance_milliunits / 1000,
+        },
+        "filters": {
+            "since_date": since_date.isoformat() if since_date else None,
+            "cleared": cleared,
+            "include_transfers": include_transfers,
+            "limit": limit,
+        },
+        "totals": {
+            "count": len(rows),
+            "amount_milliunits": _sum_milliunits(rows),
+            "amount": _sum_milliunits(rows) / 1000,
+            "by_cleared_milliunits": totals_by_cleared,
+            "by_cleared": {key: value / 1000 for key, value in totals_by_cleared.items()},
+            "count_by_cleared": counts_by_cleared,
+        },
+        "transactions": rows[: max(0, limit)],
+        "truncated": len(rows) > max(0, limit),
+    }
+
+
+@_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
+async def find_account_transaction_subset_matches(
+    budget_id: str,
+    account_id: str,
+    target_amount: Annotated[float, Field(description="Target sum in dollars.")],
+    since_date: Annotated[
+        Optional[date],
+        Field(description="ISO date (YYYY-MM-DD) to fetch transactions since. Defaults to all."),
+    ] = None,
+    tolerance: Annotated[float, Field(description="Allowed difference in dollars.")] = 0.0,
+    max_subset_size: Annotated[int, Field(description="Maximum transactions per match.")] = 3,
+    candidate_limit: Annotated[int, Field(description="Maximum candidates to search.")] = 25,
+) -> Dict[str, Any]:
+    """Find compact transaction subsets whose amounts match a reconciliation difference."""
+    async with await _s.get_ynab_client() as client:
+        transactions_api = _s.TransactionsApi(client)
+        response = transactions_api.get_transactions_by_account(
+            budget_id, account_id, since_date=since_date
+        )
+
+    rows = [_txn_to_reconciliation_row(txn) for txn in response.data.transactions]
+    rows = rows[: max(0, candidate_limit)]
+    target_milliunits = int(round(target_amount * 1000))
+    tolerance_milliunits = int(round(abs(tolerance) * 1000))
+    max_subset_size = max(1, min(max_subset_size, 5))
+
+    matches: List[Dict[str, Any]] = []
+    for size in range(1, max_subset_size + 1):
+        for combo in itertools.combinations(rows, size):
+            total = _sum_milliunits(list(combo))
+            difference = total - target_milliunits
+            if abs(difference) <= tolerance_milliunits:
+                matches.append(
+                    {
+                        "amount_milliunits": total,
+                        "amount": total / 1000,
+                        "difference_milliunits": difference,
+                        "difference": difference / 1000,
+                        "transactions": list(combo),
+                    }
+                )
+                if len(matches) >= 20:
+                    return {
+                        "target_milliunits": target_milliunits,
+                        "target": target_amount,
+                        "matches": matches,
+                        "truncated": True,
+                    }
+
+    return {
+        "target_milliunits": target_milliunits,
+        "target": target_amount,
+        "matches": matches,
+        "truncated": False,
+    }
 
 
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)

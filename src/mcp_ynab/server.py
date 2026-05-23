@@ -207,6 +207,8 @@ from .tools.transactions import (  # noqa: E402, F401
     categorize_transaction,
     create_transaction,
     delete_transaction,
+    find_account_transaction_subset_matches,
+    get_account_reconciliation_profile,
     get_scheduled_transactions,
     get_transactions,
     get_transactions_by_category,

@@ -1518,6 +1518,29 @@ async def test_delete_transaction_returns_cancelled_when_user_dismisses(
     mock_ynab_apis.transactions.delete_transaction.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_delete_transaction_skips_confirmation_when_pref_disabled(
+    mock_ynab_apis: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """confirm_before_post=False skips elicitation and deletes directly."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.update_preferences(confirm_before_post=False)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.transactions.delete_transaction.return_value = MagicMock()
+
+    ctx = _QueuedFakeContext([])  # would raise if any elicit happened
+    result = await server.delete_transaction("b-1", "t-42", ctx=ctx)
+
+    assert "deleted" in result.lower()
+    assert ctx.calls == []
+    mock_ynab_apis.transactions.delete_transaction.assert_called_once_with("b-1", "t-42")
+    mock_ynab_apis.transactions.get_transaction_by_id.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # split_transaction (idempotent mutating tool)
 # ---------------------------------------------------------------------------
@@ -2884,6 +2907,35 @@ async def test_create_transaction_skips_confirmation_when_confirm_false(
     )
 
     assert result == {"id": "t-1"}
+    assert ctx.calls == []
+    mock_ynab_apis.transactions.create_transaction.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_create_transaction_skips_confirmation_when_pref_disabled(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """confirm_before_post=False preference bypasses elicit even when confirm=True."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    isolated.update_preferences(confirm_before_post=False)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(
+        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-pref"})
+    )
+    ctx = _QueuedFakeContext([])  # would raise if any elicit happened
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=-10.0,
+        payee_name="Bookstore",
+        confirm=True,  # per-call confirm=True, but preference overrides
+        ctx=ctx,
+    )
+
+    assert result == {"id": "t-pref"}
     assert ctx.calls == []
     mock_ynab_apis.transactions.create_transaction.assert_called_once()
 

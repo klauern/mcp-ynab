@@ -317,7 +317,8 @@ async def create_transaction(
         category_id = await _resolve_category_id(client, budget_id, category_name, ctx)
         txn_date = date.today()
 
-        if confirm and ctx is not None:
+        should_confirm = confirm and _s.ynab_resources.preferences.confirm_before_post
+        if should_confirm and ctx is not None:
             resolved_name = _category_display_name(budget_id, category_id)
             ok = await _confirm_create_transaction(
                 ctx,
@@ -1225,7 +1226,7 @@ async def delete_transaction(
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
 
-        if ctx is not None:
+        if ctx is not None and _s.ynab_resources.preferences.confirm_before_post:
             try:
                 txn_resp = transactions_api.get_transaction_by_id(budget_id, transaction_id)
             except ApiException as exc:

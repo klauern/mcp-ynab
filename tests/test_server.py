@@ -261,6 +261,30 @@ async def test_code_mode_replace_tools_filters_protocol_tool_list(
 
 
 @pytest.mark.asyncio
+async def test_code_mode_replace_tools_filters_instance_list_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=True)),
+    )
+
+    names = {tool.name for tool in await server.mcp.list_tools()}
+
+    assert names == {
+        "search",
+        "execute",
+        "clear_api_key",
+        "get_preferences",
+        "ping",
+        "set_api_key",
+        "set_preference",
+        "set_preferred_budget_id",
+    }
+
+
+@pytest.mark.asyncio
 async def test_code_mode_replace_tools_escape_hatch_restores_full_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

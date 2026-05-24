@@ -272,6 +272,17 @@ async def test_move_money_partial_failure_includes_recovery_state(
     assert "manually" in msg.lower() or "reverse" in msg.lower()
 
 
+@pytest.mark.asyncio
+async def test_move_money_rejects_same_source_and_destination(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    with pytest.raises(ValueError, match="must be different"):
+        await server.move_money("budget-1", "c-same", "c-same", 50.00, "2026-05-01")
+
+    mock_ynab_apis.categories.get_month_category_by_id.assert_not_called()
+    mock_ynab_apis.categories.update_month_category.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------

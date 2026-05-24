@@ -184,6 +184,8 @@ async def list_enriched_categories_resource(budget_id: str) -> list[types.TextCo
 
     sections: list[str] = []
     for group in groups:
+        if getattr(group, "deleted", False):
+            continue
         group_name = getattr(group, "name", None) or "Uncategorized"
         categories = getattr(group, "categories", None) or []
         active = [c for c in categories if not getattr(c, "deleted", False)]

@@ -3315,6 +3315,33 @@ async def test_list_enriched_categories_resource_filters_deleted(
 
 
 @pytest.mark.asyncio
+async def test_list_enriched_categories_resource_filters_deleted_groups(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[
+            _category_group_enriched_mock(
+                "Deleted Group",
+                [_category_enriched_mock("c-stale", "Stale Category")],
+                deleted=True,
+            ),
+            _category_group_enriched_mock(
+                "Active Group",
+                [_category_enriched_mock("c-active", "Active Category")],
+            ),
+        ]
+    )
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    text = result[0].text
+    assert "Active Group" in text
+    assert "Active Category" in text
+    assert "Deleted Group" not in text
+    assert "Stale Category" not in text
+
+
+@pytest.mark.asyncio
 async def test_list_enriched_categories_resource_shows_balance_columns(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:

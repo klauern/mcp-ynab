@@ -116,8 +116,12 @@ unapproved = [txn.id for txn in transactions if not getattr(txn, "approved", Fal
 if not unapproved:
     return {"approved": 0, "reason": "all transactions already approved"}
 
+budget_id = getattr(transactions[0], "budget_id", None)
+if not budget_id:
+    return {"approved": 0, "reason": "could not infer budget_id from transactions"}
+
 result = await ynab.write.approve_transactions(
-    budget_id=transactions[0].budget_id if hasattr(transactions[0], "budget_id") else budget_id,
+    budget_id=budget_id,
     transaction_ids=unapproved[:LIMIT],
 )
 print("approved", len(unapproved[:LIMIT]), "transactions")

@@ -312,6 +312,8 @@ async def move_money(
             "move_money requires from_category_id and to_category_id. "
             "Provide them explicitly or pass an MCP context for interactive selection."
         )
+    if from_category_id == to_category_id:
+        raise ValueError("from_category_id and to_category_id must be different.")
 
     delta = int(amount * 1000)
     m = _resolve_month(month)

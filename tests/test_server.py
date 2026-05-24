@@ -386,46 +386,15 @@ def test_load_json_file_handles_invalid_json(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_categorize_transaction_id_path_skips_fetch_and_patches_only_category(
-    monkeypatch: pytest.MonkeyPatch,
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The "id" path must NOT GET the transaction first; it must only PATCH category_id."""
-
-    class DummyApi:
-        def __init__(self) -> None:
-            self.by_id_called = False
-            self.scan_called = False
-            self.update_calls: list[tuple[str, str, object]] = []
-
-        def get_transaction_by_id(self, budget_id: str, transaction_id: str):
-            self.by_id_called = True
-            raise AssertionError("categorize_transaction must not GET when id_type='id'")
-
-        def get_transactions(self, budget_id: str, since_date=None):
-            self.scan_called = True
-            raise AssertionError("categorize_transaction must not scan when id_type='id'")
-
-        def update_transaction(self, budget_id: str, transaction_id: str, data):
-            self.update_calls.append((budget_id, transaction_id, data))
-
-    class DummyCtx:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-    api = DummyApi()
     captured_kwargs: dict = {}
-
-    async def fake_get_ynab_client():
-        return DummyCtx()
 
     def fake_existing_transaction(**kwargs):
         captured_kwargs.update(kwargs)
         return kwargs
 
-    monkeypatch.setattr(server, "get_ynab_client", fake_get_ynab_client)
-    monkeypatch.setattr(server, "TransactionsApi", lambda client: api)
     monkeypatch.setattr(server, "ExistingTransaction", fake_existing_transaction)
     monkeypatch.setattr(
         server, "PutTransactionWrapper", lambda transaction: {"transaction": transaction}
@@ -434,36 +403,21 @@ async def test_categorize_transaction_id_path_skips_fetch_and_patches_only_categ
     result = await server.categorize_transaction("budget-1", "tx-1", "cat-1", id_type="id")
 
     assert "categorized as cat-1" in result
-    assert api.by_id_called is False, "id_type='id' must skip GET to avoid clobber on race"
-    assert api.scan_called is False
-    assert len(api.update_calls) == 1
-    update_budget, update_tid, _ = api.update_calls[0]
-    assert update_budget == "budget-1"
-    assert update_tid == "tx-1"
-    # PATCH semantics: only category_id should be on the wire.
+    mock_ynab_apis.transactions.get_transaction_by_id.assert_not_called()
+    mock_ynab_apis.transactions.get_transactions.assert_not_called()
+    call = mock_ynab_apis.transactions.update_transaction.call_args
+    assert call.kwargs["budget_id"] == "budget-1"
+    assert call.kwargs["transaction_id"] == "tx-1"
     assert captured_kwargs == {"category_id": "cat-1"}
 
 
 @pytest.mark.asyncio
 async def test_categorize_transaction_reraises_non_404_api_exception(
-    monkeypatch: pytest.MonkeyPatch,
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class DummyApi:
-        def update_transaction(self, budget_id: str, transaction_id: str, data):
-            raise server.ApiException(status=500, reason="server error")
-
-    class DummyCtx:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-    async def fake_get_ynab_client():
-        return DummyCtx()
-
-    monkeypatch.setattr(server, "get_ynab_client", fake_get_ynab_client)
-    monkeypatch.setattr(server, "TransactionsApi", lambda client: DummyApi())
+    mock_ynab_apis.transactions.update_transaction.side_effect = server.ApiException(
+        status=500, reason="server error"
+    )
     monkeypatch.setattr(server, "ExistingTransaction", lambda **kwargs: kwargs)
     monkeypatch.setattr(
         server, "PutTransactionWrapper", lambda transaction: {"transaction": transaction}
@@ -475,26 +429,12 @@ async def test_categorize_transaction_reraises_non_404_api_exception(
 
 @pytest.mark.asyncio
 async def test_categorize_transaction_returns_not_found_on_404(
-    monkeypatch: pytest.MonkeyPatch,
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A 404 from update_transaction (e.g. id doesn't exist) must surface as 'not found'."""
-
-    class DummyApi:
-        def update_transaction(self, budget_id: str, transaction_id: str, data):
-            raise server.ApiException(status=404, reason="not found")
-
-    class DummyCtx:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-    async def fake_get_ynab_client():
-        return DummyCtx()
-
-    monkeypatch.setattr(server, "get_ynab_client", fake_get_ynab_client)
-    monkeypatch.setattr(server, "TransactionsApi", lambda client: DummyApi())
+    mock_ynab_apis.transactions.update_transaction.side_effect = server.ApiException(
+        status=404, reason="not found"
+    )
     monkeypatch.setattr(server, "ExistingTransaction", lambda **kwargs: kwargs)
     monkeypatch.setattr(
         server, "PutTransactionWrapper", lambda transaction: {"transaction": transaction}
@@ -506,7 +446,7 @@ async def test_categorize_transaction_returns_not_found_on_404(
 
 @pytest.mark.asyncio
 async def test_categorize_transaction_only_ships_category_id_on_patch(
-    monkeypatch: pytest.MonkeyPatch,
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """PATCH semantics: ExistingTransaction must be constructed with ONLY category_id.
 
@@ -517,30 +457,12 @@ async def test_categorize_transaction_only_ships_category_id_on_patch(
     every other field. This test would have caught the old behavior because
     it fails if anything other than category_id ends up in the wrapper.
     """
-
-    class DummyApi:
-        def update_transaction(self, budget_id: str, transaction_id: str, data):
-            self.data = data
-
-    class DummyCtx:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-    api = DummyApi()
     captured: dict = {}
-
-    async def fake_get_ynab_client():
-        return DummyCtx()
 
     def fake_existing_transaction(**kwargs):
         captured.update(kwargs)
         return kwargs
 
-    monkeypatch.setattr(server, "get_ynab_client", fake_get_ynab_client)
-    monkeypatch.setattr(server, "TransactionsApi", lambda client: api)
     monkeypatch.setattr(server, "ExistingTransaction", fake_existing_transaction)
     monkeypatch.setattr(
         server, "PutTransactionWrapper", lambda transaction: {"transaction": transaction}
@@ -550,7 +472,6 @@ async def test_categorize_transaction_only_ships_category_id_on_patch(
 
     assert set(captured.keys()) == {"category_id"}
     assert captured["category_id"] == "cat-new"
-    # Specifically verify none of the easy-to-clobber fields are present.
     for stale_field in ("memo", "cleared", "flag_color", "approved", "subtransactions"):
         assert stale_field not in captured, (
             f"{stale_field} must not be sent — server preserves it on PATCH"

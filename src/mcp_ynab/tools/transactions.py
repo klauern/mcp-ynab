@@ -1202,12 +1202,21 @@ async def get_transactions_by_category(
 
 
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
-async def delete_transaction(budget_id: str, transaction_id: str) -> str:
+async def delete_transaction(
+    budget_id: str,
+    transaction_id: str,
+    ctx: Optional[Context] = None,
+) -> str:
     """Delete a transaction from a YNAB budget.
+
+    When an MCP context is available, fetches the transaction summary (date,
+    payee, amount, category) and elicits confirmation before deleting. If the
+    user declines or cancels, returns a cancellation message without deleting.
 
     Args:
         budget_id: The YNAB budget ID.
         transaction_id: The transaction ID to delete.
+        ctx: MCP context used to elicit confirmation (injected by FastMCP).
 
     Returns:
         A confirmation string. Raises ApiException on YNAB API errors (e.g.
@@ -1215,6 +1224,35 @@ async def delete_transaction(budget_id: str, transaction_id: str) -> str:
     """
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
+
+        if ctx is not None:
+            try:
+                txn_resp = transactions_api.get_transaction_by_id(budget_id, transaction_id)
+            except ApiException as exc:
+                if exc.status == 404:
+                    raise ValueError(
+                        f"Transaction {transaction_id} not found in budget {budget_id}."
+                    ) from exc
+                raise
+            txn = txn_resp.data.transaction
+            amount_dollars = float(getattr(txn, "amount", 0)) / 1000
+            payee = getattr(txn, "payee_name", None) or "Unknown payee"
+            txn_date = _txn_date_iso(txn)
+            category = getattr(txn, "category_name", None) or "Uncategorized"
+            memo_part = f" — {txn.memo}" if getattr(txn, "memo", None) else ""
+            message = (
+                f"Delete transaction?\n"
+                f"- **Date:** {txn_date}\n"
+                f"- **Payee:** {payee}\n"
+                f"- **Amount:** ${abs(amount_dollars):.2f}"
+                f" ({'outflow' if amount_dollars < 0 else 'inflow'})\n"
+                f"- **Category:** {category}{memo_part}\n\n"
+                "This cannot be undone."
+            )
+            result = await ctx.elicit(message=message, schema=_PostConfirmation)
+            if result.action != "accept" or not result.data.confirm:
+                return f"Delete of transaction {transaction_id} cancelled."
+
         transactions_api.delete_transaction(budget_id, transaction_id)
     return f"Transaction {transaction_id} deleted from budget {budget_id}."
 

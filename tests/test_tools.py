@@ -1452,6 +1452,72 @@ async def test_delete_transaction_propagates_api_exception(
         await server.delete_transaction("b-1", "t-missing")
 
 
+@pytest.mark.asyncio
+async def test_delete_transaction_elicits_confirmation_and_proceeds_when_confirmed(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    txn_mock = MagicMock()
+    txn_mock.amount = -42_500
+    txn_mock.payee_name = "Amazon"
+    txn_mock.category_name = "Shopping"
+    txn_mock.memo = None
+    txn_mock.var_date = None
+    txn_mock.date = "2026-05-10"
+    mock_ynab_apis.transactions.get_transaction_by_id.return_value = _resp(transaction=txn_mock)
+    mock_ynab_apis.transactions.delete_transaction.return_value = MagicMock()
+
+    ctx = _FakeContext(_accept_confirm(True))
+    result = await server.delete_transaction("b-1", "t-42", ctx=ctx)
+
+    assert "deleted" in result.lower()
+    assert len(ctx.calls) == 1
+    message, _schema = ctx.calls[0]
+    assert "Amazon" in message
+    assert "$42.50" in message
+    assert "outflow" in message
+    mock_ynab_apis.transactions.delete_transaction.assert_called_once_with("b-1", "t-42")
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_returns_cancelled_when_user_declines(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    txn_mock = MagicMock()
+    txn_mock.amount = -10_000
+    txn_mock.payee_name = "Netflix"
+    txn_mock.category_name = "Subscriptions"
+    txn_mock.memo = None
+    txn_mock.var_date = None
+    txn_mock.date = "2026-05-01"
+    mock_ynab_apis.transactions.get_transaction_by_id.return_value = _resp(transaction=txn_mock)
+
+    ctx = _FakeContext(_accept_confirm(False))
+    result = await server.delete_transaction("b-1", "t-99", ctx=ctx)
+
+    assert "cancelled" in result.lower()
+    mock_ynab_apis.transactions.delete_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_returns_cancelled_when_user_dismisses(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    txn_mock = MagicMock()
+    txn_mock.amount = -5_000
+    txn_mock.payee_name = "Gym"
+    txn_mock.category_name = None
+    txn_mock.memo = None
+    txn_mock.var_date = None
+    txn_mock.date = "2026-05-15"
+    mock_ynab_apis.transactions.get_transaction_by_id.return_value = _resp(transaction=txn_mock)
+
+    ctx = _FakeContext(SimpleNamespace(action="cancel"))
+    result = await server.delete_transaction("b-1", "t-88", ctx=ctx)
+
+    assert "cancelled" in result.lower()
+    mock_ynab_apis.transactions.delete_transaction.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # split_transaction (idempotent mutating tool)
 # ---------------------------------------------------------------------------

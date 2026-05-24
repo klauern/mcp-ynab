@@ -134,6 +134,32 @@ def test_resolve_api_key_swallows_keyring_backend_errors(
     assert _resolve_api_key() is None
 
 
+def test_resolve_config_dir_respects_xdg_config_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    xdg_base = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_base))
+
+    from mcp_ynab.client import _resolve_config_dir
+
+    result = _resolve_config_dir()
+    assert result == xdg_base / "mcp-ynab"
+    assert result.is_dir()
+
+
+def test_resolve_config_dir_defaults_to_home_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+    from mcp_ynab.client import _resolve_config_dir
+
+    result = _resolve_config_dir()
+    assert result == tmp_path / ".config" / "mcp-ynab"
+    assert result.is_dir()
+
+
 @pytest.mark.asyncio
 async def test_set_api_key_tool_persists_to_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, str] = {}

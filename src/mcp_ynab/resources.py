@@ -237,7 +237,11 @@ async def list_payees_resource(budget_id: str) -> list[types.TextContent]:
     _s.ynab_resources.cache_payees(budget_id, raw)
 
     if not active:
-        return [types.TextContent(type="text", text=f"# YNAB Payees ({budget_id})\n\n_No payees found._")]
+        return [
+            types.TextContent(
+                type="text", text=f"# YNAB Payees ({budget_id})\n\n_No payees found._"
+            )
+        ]
 
     headers = ["Name", "ID", "Transfer Account ID"]
     rows = [[r["name"] or "", r["id"] or "", r["transfer_account_id"] or ""] for r in raw]

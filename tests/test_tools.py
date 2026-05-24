@@ -2011,7 +2011,7 @@ async def test_create_scheduled_transaction_basic(
     assert "sched-abc" in result
     assert "Netflix" in result
     assert "monthly" in result
-    assert "$15.99" in result
+    assert "-$15.99" in result
 
     call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
     budget_id, wrapper = call.args
@@ -2021,6 +2021,18 @@ async def test_create_scheduled_transaction_basic(
     assert txn.amount == -15990
     assert txn.payee_name == "Netflix"
     assert txn.frequency == "monthly"
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_rejects_payee_id_and_name() -> None:
+    with pytest.raises(ValueError, match="payee_id or payee_name, not both"):
+        await server.create_scheduled_transaction(
+            "b-1",
+            "acct-1",
+            -15.99,
+            payee_id="payee-1",
+            payee_name="Netflix",
+        )
 
 
 @pytest.mark.asyncio

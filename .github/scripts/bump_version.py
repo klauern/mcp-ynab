@@ -8,7 +8,12 @@ import re
 from pathlib import Path
 
 
-VERSION_RE = re.compile(r'^(version\s*=\s*)"(?P<version>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"$', re.MULTILINE)
+VERSION_RE = re.compile(
+    r'^(version\s*=\s*)"'
+    r"(?P<version>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
+    r'"$',
+    re.MULTILINE,
+)
 
 
 def bump(version: str, level: str) -> str:
@@ -28,9 +33,7 @@ def bump_pyproject(path: Path, level: str) -> tuple[str, str]:
     if match is None:
         raise RuntimeError(f"Could not find a static project version in {path}")
 
-    current_version = ".".join(
-        [match.group("version"), match.group("minor"), match.group("patch")]
-    )
+    current_version = ".".join([match.group("version"), match.group("minor"), match.group("patch")])
     next_version = bump(current_version, level)
     updated = VERSION_RE.sub(rf'\g<1>"{next_version}"', content, count=1)
     path.write_text(updated)

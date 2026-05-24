@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import ModuleType
 
 
-def load_bump_version_module():
+def load_bump_version_module() -> ModuleType:
     script_path = Path(__file__).parents[1] / ".github" / "scripts" / "bump_version.py"
     spec = importlib.util.spec_from_file_location("bump_version", script_path)
     assert spec is not None
@@ -16,7 +17,7 @@ def load_bump_version_module():
     return module
 
 
-def test_bump_version_levels():
+def test_bump_version_levels() -> None:
     module = load_bump_version_module()
 
     assert module.bump("2.3.4", "patch") == "2.3.5"
@@ -24,7 +25,7 @@ def test_bump_version_levels():
     assert module.bump("2.3.4", "major") == "3.0.0"
 
 
-def test_bump_pyproject_updates_static_project_version(tmp_path):
+def test_bump_pyproject_updates_static_project_version(tmp_path: Path) -> None:
     module = load_bump_version_module()
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text('[project]\nname = "demo"\nversion = "2.3.4"\n')

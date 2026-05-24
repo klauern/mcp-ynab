@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from .server import mcp
 
+__version__: str
 try:
     __version__ = version("mcp-ynab")
 except PackageNotFoundError:

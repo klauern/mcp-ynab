@@ -1139,11 +1139,15 @@ async def create_scheduled_transaction(
     Provide either `payee_id` (for an existing payee) or `payee_name`
     (creates a new payee) — not both.
     """
+    if payee_id is not None and payee_name is not None:
+        raise ValueError("create_scheduled_transaction accepts payee_id or payee_name, not both.")
+
     txn_date = date.fromisoformat(start_date) if start_date else date.today()
+    amount_milliunits = int(round(amount * 1000))
     txn = SaveScheduledTransaction(
         account_id=account_id,
         var_date=txn_date,
-        amount=int(amount * 1000),
+        amount=amount_milliunits,
         payee_id=payee_id,
         payee_name=payee_name,
         category_id=category_id,

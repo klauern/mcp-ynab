@@ -3200,3 +3200,125 @@ async def test_list_payees_resource_caches_results(
     assert cached[0]["id"] == "p-1"
     assert cached[0]["name"] == "Grocery Store"
     assert cached[0]["transfer_account_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# ynab://categories/{budget_id}/current resource (list_enriched_categories_resource)
+# ---------------------------------------------------------------------------
+
+
+def _category_enriched_mock(
+    cat_id: str,
+    name: str,
+    budgeted: int = 100_000,
+    activity: int = -50_000,
+    balance: int = 50_000,
+    *,
+    deleted: bool = False,
+) -> MagicMock:
+    """Build a category mock with budgeted/activity/balance attrs."""
+    cat = MagicMock()
+    cat.id = cat_id
+    cat.name = name
+    cat.budgeted = budgeted
+    cat.activity = activity
+    cat.balance = balance
+    cat.deleted = deleted
+    return cat
+
+
+def _category_group_enriched_mock(
+    name: str, categories: list[MagicMock], *, deleted: bool = False
+) -> MagicMock:
+    group = MagicMock()
+    group.name = name
+    group.categories = categories
+    group.deleted = deleted
+    return group
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_renders_markdown_table(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[
+            _category_group_enriched_mock(
+                "Food",
+                [
+                    _category_enriched_mock("c-1", "Groceries", 200_000, -80_000, 120_000),
+                    _category_enriched_mock("c-2", "Dining Out", 100_000, -30_000, 70_000),
+                ],
+            )
+        ]
+    )
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    assert len(result) == 1
+    text = result[0].text
+    assert "YNAB Categories" in text
+    assert "Food" in text
+    assert "Groceries" in text
+    assert "c-1" in text
+    assert "Dining Out" in text
+    mock_ynab_apis.categories.get_categories.assert_called_once_with("b-1")
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_handles_empty(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(category_groups=[])
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    assert len(result) == 1
+    assert "_No categories found._" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_filters_deleted(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[
+            _category_group_enriched_mock(
+                "Bills",
+                [
+                    _category_enriched_mock("c-active", "Rent"),
+                    _category_enriched_mock("c-del", "Old Category", deleted=True),
+                ],
+            )
+        ]
+    )
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    text = result[0].text
+    assert "Rent" in text
+    assert "c-active" in text
+    assert "Old Category" not in text
+    assert "c-del" not in text
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_shows_balance_columns(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[
+            _category_group_enriched_mock(
+                "Food",
+                [_category_enriched_mock("c-1", "Groceries", 200_000, -80_000, 120_000)],
+            )
+        ]
+    )
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    text = result[0].text
+    # budgeted=$200, activity=$80, balance=$120
+    assert "$200.00" in text
+    assert "$80.00" in text
+    assert "$120.00" in text

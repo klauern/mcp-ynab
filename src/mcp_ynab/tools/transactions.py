@@ -255,7 +255,15 @@ async def _confirm_create_transaction(
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
 async def create_transaction(
     account_id: str,
-    amount: Annotated[float, Field(description="Amount in dollars")],
+    amount: Annotated[
+        float,
+        Field(
+            description=(
+                "Amount in dollars. Negative for outflows (expenses, e.g. -42.50), "
+                "positive for inflows (deposits, e.g. 1500.00)."
+            )
+        ),
+    ],
     payee_name: Optional[str] = None,
     payee_id: Annotated[
         Optional[str],
@@ -280,6 +288,10 @@ async def create_transaction(
     ctx: Optional[Context] = None,
 ) -> Dict[str, Any]:
     """Create a new transaction in YNAB.
+
+    ``amount`` is in dollars: negative for outflows (expenses), positive for
+    inflows. For example, -42.50 records a $42.50 expense; 1500.00 records a
+    $1,500 deposit.
 
     Provide exactly one of ``payee_name`` or ``payee_id``. To create a true
     account transfer, pass the destination account's transfer payee as

@@ -3030,3 +3030,121 @@ async def test_create_transaction_chains_category_then_confirmation(
     # Confirmation message reflects the *chosen* category, not the user's input.
     confirm_msg = ctx.calls[1][0]
     assert "Groceries (Household)" in confirm_msg
+
+
+# ---------------------------------------------------------------------------
+# ynab://payees/{budget_id} resource (list_payees_resource)
+# ---------------------------------------------------------------------------
+
+
+def _payee_mock(
+    payee_id: str,
+    name: str,
+    transfer_account_id: str | None = None,
+    *,
+    deleted: bool = False,
+) -> MagicMock:
+    """Build a payee mock with the attrs read by list_payees_resource."""
+    payee = MagicMock()
+    payee.id = payee_id
+    payee.name = name
+    payee.transfer_account_id = transfer_account_id
+    payee.deleted = deleted
+    return payee
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_renders_markdown_table(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.payees.get_payees.return_value = _resp(
+        payees=[
+            _payee_mock("p-1", "Amazon"),
+            _payee_mock("p-2", "Transfer: Savings", transfer_account_id="acct-99"),
+        ]
+    )
+
+    result = await server.list_payees_resource("b-1")
+
+    assert len(result) == 1
+    text = result[0].text
+    assert text.startswith("# YNAB Payees (b-1)")
+    assert "Amazon" in text
+    assert "p-1" in text
+    assert "Transfer: Savings" in text
+    assert "p-2" in text
+    assert "acct-99" in text
+    mock_ynab_apis.payees.get_payees.assert_called_once_with("b-1")
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_handles_empty_list(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.payees.get_payees.return_value = _resp(payees=[])
+
+    result = await server.list_payees_resource("b-1")
+
+    assert len(result) == 1
+    assert "_No payees found._" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_filters_deleted_payees(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.payees.get_payees.return_value = _resp(
+        payees=[
+            _payee_mock("p-active", "Active Payee"),
+            _payee_mock("p-del", "Deleted Payee", deleted=True),
+        ]
+    )
+
+    result = await server.list_payees_resource("b-1")
+
+    text = result[0].text
+    assert "Active Payee" in text
+    assert "p-active" in text
+    assert "Deleted Payee" not in text
+    assert "p-del" not in text
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_caches_results(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.payees.get_payees.return_value = _resp(
+        payees=[_payee_mock("p-1", "Grocery Store")]
+    )
+
+    await server.list_payees_resource("b-1")
+
+    cached = isolated.get_cached_payee_records("b-1")
+    assert len(cached) == 1
+    assert cached[0]["id"] == "p-1"
+    assert cached[0]["name"] == "Grocery Store"
+    assert cached[0]["transfer_account_id"] is None

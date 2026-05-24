@@ -161,6 +161,7 @@ from .resources import (  # noqa: E402, F401
     get_preferred_budget_id,
     list_accounts_resource,
     list_budgets_resource,
+    list_payees_resource,
 )
 from .tools.budgeting import (  # noqa: E402, F401
     assign_money,

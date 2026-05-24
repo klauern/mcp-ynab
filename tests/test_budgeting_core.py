@@ -369,3 +369,103 @@ async def test_update_category_move_group(
 async def test_update_category_requires_at_least_one_field() -> None:
     with pytest.raises(ValueError, match="At least one of"):
         await server.update_category("budget-1", "c-1")
+
+
+# ---------------------------------------------------------------------------
+# move_money elicitation (qlh.5)
+# ---------------------------------------------------------------------------
+
+
+class _ElicitFakeContext:
+    """Minimal ctx stub that replays pre-loaded elicitation results."""
+
+    def __init__(self, responses: list) -> None:
+        self._responses = list(responses)
+        self.calls: list = []
+
+    async def elicit(self, *, message: str, schema: object) -> SimpleNamespace:  # type: ignore[override]
+        self.calls.append((message, schema))
+        if not self._responses:
+            raise AssertionError("Unexpected ctx.elicit() call — no more responses queued.")
+        return self._responses.pop(0)
+
+    async def request_context(self) -> SimpleNamespace:  # type: ignore[override]
+        return SimpleNamespace()
+
+
+def _accept_category_choice(index: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        action="accept",
+        data=SimpleNamespace(index=index),
+    )
+
+
+@pytest.mark.asyncio
+async def test_move_money_elicits_from_and_to_when_missing(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.cache_categories(
+        "budget-1",
+        [
+            {"id": "c-food", "name": "Groceries", "category_group_name": "Food"},
+            {"id": "c-fun", "name": "Entertainment", "category_group_name": "Fun"},
+        ],
+    )
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    src = _category_mock("c-food", "Groceries", budgeted=400_000)
+    dst = _category_mock("c-fun", "Entertainment", budgeted=50_000)
+    mock_ynab_apis.categories.get_month_category_by_id.side_effect = [
+        _resp(category=src),
+        _resp(category=dst),
+    ]
+    mock_ynab_apis.categories.update_month_category.return_value = _resp(category=src)
+
+    ctx = _ElicitFakeContext(
+        [_accept_category_choice(1), _accept_category_choice(2)]  # FROM=Groceries, TO=Entertainment
+    )
+    result = await server.move_money("budget-1", amount=25.0, ctx=ctx)
+
+    assert "Moved $25.00 from **Groceries** → **Entertainment**" in result
+    assert len(ctx.calls) == 2
+    assert "FROM" in ctx.calls[0][0]
+    assert "TO" in ctx.calls[1][0]
+
+
+@pytest.mark.asyncio
+async def test_move_money_returns_cancelled_when_from_declined(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.cache_categories(
+        "budget-1",
+        [{"id": "c-food", "name": "Groceries", "category_group_name": "Food"}],
+    )
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    ctx = _ElicitFakeContext([SimpleNamespace(action="decline", data=None)])
+    result = await server.move_money("budget-1", amount=10.0, ctx=ctx)
+
+    assert "cancelled" in result.lower()
+    mock_ynab_apis.categories.update_month_category.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_move_money_raises_when_ids_missing_and_no_ctx() -> None:
+    with pytest.raises(ValueError, match="requires from_category_id and to_category_id"):
+        await server.move_money("budget-1", amount=10.0)
+
+
+@pytest.mark.asyncio
+async def test_move_money_raises_when_amount_missing() -> None:
+    with pytest.raises(ValueError, match="requires an amount"):
+        await server.move_money("budget-1", from_category_id="c-1", to_category_id="c-2")

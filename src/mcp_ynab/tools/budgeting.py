@@ -108,7 +108,11 @@ async def get_accounts(budget_id: str) -> str:
 
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
 async def get_categories(budget_id: str) -> str:
-    """List all transaction categories for a given YNAB budget in Markdown format."""
+    """List all transaction categories for a given YNAB budget in Markdown format.
+
+    Note: YNAB API v1 does not expose a create-category endpoint. Categories
+    can only be created in the YNAB web or mobile app; this tool is read-only.
+    """
     async with await _s.get_ynab_client() as client:
         categories_api = _s.CategoriesApi(client)
         response = categories_api.get_categories(budget_id)
@@ -305,6 +309,10 @@ async def update_category(
 
     At least one of `name`, `note`, or `category_group_id` must be provided.
     Idempotent: applying the same values twice leaves the category unchanged.
+
+    Note: YNAB API v1 does not support setting goals via API. Goal fields
+    (goal_type, goal_target, etc.) appear on the read model but the write
+    model (SaveCategory) only accepts name, note, and category_group_id.
 
     Args:
         budget_id: The YNAB budget ID.

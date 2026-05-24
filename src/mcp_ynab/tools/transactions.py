@@ -1045,6 +1045,10 @@ async def get_scheduled_transactions(
 
     Filters server-side results to only those whose `date_next` is on or
     before today + `within_days`.
+
+    Note: YNAB API v1 does not expose update or delete endpoints for scheduled
+    transactions. Only creation (create_scheduled_transaction) and listing are
+    supported via API; changes must otherwise be made in the YNAB app.
     """
     cutoff = date.today() + timedelta(days=within_days)
 

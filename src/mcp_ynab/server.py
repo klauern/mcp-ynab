@@ -205,6 +205,7 @@ from .tools.transactions import (  # noqa: E402, F401
     approve_transactions,
     bulk_categorize,
     categorize_transaction,
+    create_scheduled_transaction,
     create_transaction,
     delete_transaction,
     find_account_transaction_subset_matches,

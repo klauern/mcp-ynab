@@ -1899,6 +1899,84 @@ async def test_get_scheduled_transactions_renders_amount_columns(
 
 
 # ---------------------------------------------------------------------------
+# create_scheduled_transaction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_basic(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    created = MagicMock()
+    created.id = "sched-abc"
+    created.payee_name = "Netflix"
+    created.account_name = "Checking"
+    mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=created
+    )
+
+    result = await server.create_scheduled_transaction(
+        "b-1", "acct-1", -15.99, frequency="monthly", payee_name="Netflix"
+    )
+
+    assert "sched-abc" in result
+    assert "Netflix" in result
+    assert "monthly" in result
+    assert "$15.99" in result
+
+    call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
+    budget_id, wrapper = call.args
+    assert budget_id == "b-1"
+    txn = wrapper.scheduled_transaction
+    assert txn.account_id == "acct-1"
+    assert txn.amount == -15990
+    assert txn.payee_name == "Netflix"
+    assert txn.frequency == "monthly"
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_uses_start_date(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    created = MagicMock()
+    created.id = "sched-xyz"
+    created.payee_name = "Landlord"
+    created.account_name = "Checking"
+    mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=created
+    )
+
+    await server.create_scheduled_transaction("b-1", "acct-1", -1500.00, start_date="2026-06-01")
+
+    call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
+    _, wrapper = call.args
+    from datetime import date
+
+    assert wrapper.scheduled_transaction.var_date == date(2026, 6, 1)
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_defaults_to_today(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    from datetime import date
+
+    created = MagicMock()
+    created.id = "sched-def"
+    created.payee_name = "Gym"
+    created.account_name = "Checking"
+    mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=created
+    )
+
+    await server.create_scheduled_transaction("b-1", "acct-1", -50.00)
+
+    call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
+    _, wrapper = call.args
+    assert wrapper.scheduled_transaction.var_date == date.today()
+
+
+# ---------------------------------------------------------------------------
 # get_transactions_by_category
 # ---------------------------------------------------------------------------
 

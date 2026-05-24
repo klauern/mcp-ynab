@@ -19,7 +19,9 @@ from ynab.api_client import ApiClient
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
 from ynab.models.new_transaction import NewTransaction
 from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
+from ynab.models.post_scheduled_transaction_wrapper import PostScheduledTransactionWrapper
 from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
+from ynab.models.save_scheduled_transaction import SaveScheduledTransaction
 from ynab.models.save_sub_transaction import SaveSubTransaction
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 from ynab.models.transaction_detail import TransactionDetail
@@ -1074,6 +1076,79 @@ async def get_scheduled_transactions(
 
     markdown += _build_markdown_table(rows, headers, align)
     return markdown
+
+
+_FREQUENCY_VALUES = Literal[
+    "never",
+    "daily",
+    "weekly",
+    "everyOtherWeek",
+    "twiceAMonth",
+    "every4Weeks",
+    "monthly",
+    "everyOtherMonth",
+    "every3Months",
+    "every4Months",
+    "twiceAYear",
+    "yearly",
+    "everyOtherYear",
+]
+
+
+@_s.mcp.tool(annotations=_s.MUTATING_TOOL)
+async def create_scheduled_transaction(
+    budget_id: str,
+    account_id: str,
+    amount: float,
+    frequency: _FREQUENCY_VALUES = "monthly",
+    start_date: Optional[str] = None,
+    payee_id: Optional[str] = None,
+    payee_name: Optional[str] = None,
+    category_id: Optional[str] = None,
+    memo: Optional[str] = None,
+    flag_color: Optional[str] = None,
+) -> str:
+    """Create a new scheduled (recurring) transaction in a YNAB budget.
+
+    `amount` is in dollars; negative values are outflows (expenses), positive
+    are inflows (income). The value is converted to milliunits internally.
+
+    `start_date` is an ISO date string (YYYY-MM-DD); defaults to today.
+
+    Valid `frequency` values: never, daily, weekly, everyOtherWeek,
+    twiceAMonth, every4Weeks, monthly, everyOtherMonth, every3Months,
+    every4Months, twiceAYear, yearly, everyOtherYear.
+
+    Provide either `payee_id` (for an existing payee) or `payee_name`
+    (creates a new payee) — not both.
+    """
+    txn_date = date.fromisoformat(start_date) if start_date else date.today()
+    txn = SaveScheduledTransaction(
+        account_id=account_id,
+        var_date=txn_date,
+        amount=int(amount * 1000),
+        payee_id=payee_id,
+        payee_name=payee_name,
+        category_id=category_id,
+        memo=memo,
+        flag_color=flag_color,
+        frequency=frequency,
+    )
+    async with await _s.get_ynab_client() as client:
+        scheduled_api = _s.ScheduledTransactionsApi(client)
+        response = scheduled_api.create_scheduled_transaction(
+            budget_id, PostScheduledTransactionWrapper(scheduled_transaction=txn)
+        )
+        sched = response.data.scheduled_transaction
+    amount_str = f"${abs(amount):,.2f}" if amount >= 0 else f"-${abs(amount):,.2f}"
+    return (
+        f"Scheduled transaction created (ID: `{sched.id}`).\n"
+        f"- **Payee:** {getattr(sched, 'payee_name', payee_name or payee_id or 'N/A')}\n"
+        f"- **Amount:** {amount_str}\n"
+        f"- **Frequency:** {frequency}\n"
+        f"- **Start:** {txn_date.isoformat()}\n"
+        f"- **Account:** {getattr(sched, 'account_name', account_id)}\n"
+    )
 
 
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)

@@ -166,6 +166,91 @@ def get_cached_categories(budget_id: str) -> list[types.TextContent]:
     return _s.ynab_resources.get_cached_categories(budget_id)
 
 
+@_s.mcp.resource("ynab://categories/{budget_id}/current")
+async def list_enriched_categories_resource(budget_id: str) -> list[types.TextContent]:
+    """Live category list with current-month budgeted, activity, and balance.
+
+    Fetches all category groups from the YNAB API and returns a per-group
+    markdown table so the model can answer 'what's left in Groceries?' without
+    a tool call. The balance column shows what's available to spend this month.
+    """
+    async with await _s.get_ynab_client() as client:
+        categories_api = _s.CategoriesApi(client)
+        response = categories_api.get_categories(budget_id)
+        groups = response.data.category_groups or []
+
+    headers = ["Category", "Budgeted", "Activity", "Balance", "ID"]
+    align = ["left", "right", "right", "right", "left"]
+
+    sections: list[str] = []
+    for group in groups:
+        if getattr(group, "deleted", False):
+            continue
+        group_name = getattr(group, "name", None) or "Uncategorized"
+        categories = getattr(group, "categories", None) or []
+        active = [c for c in categories if not getattr(c, "deleted", False)]
+        if not active:
+            continue
+
+        rows: list[list[str]] = []
+        for cat in active:
+            cat_id = str(getattr(cat, "id", "") or "")
+            name = str(getattr(cat, "name", "") or "")
+            budgeted = float(getattr(cat, "budgeted", 0) or 0) / 1000
+            activity = float(getattr(cat, "activity", 0) or 0) / 1000
+            balance = float(getattr(cat, "balance", 0) or 0) / 1000
+            rows.append(
+                [
+                    name,
+                    _format_dollar_amount(budgeted),
+                    _format_dollar_amount(activity),
+                    _format_dollar_amount(balance),
+                    cat_id,
+                ]
+            )
+        sections.append(f"## {group_name}\n\n" + _build_markdown_table(rows, headers, align))
+
+    header = f"# YNAB Categories — Current Month ({budget_id})\n\n"
+    if not sections:
+        return [types.TextContent(type="text", text=header + "_No categories found._")]
+    return [types.TextContent(type="text", text=header + "\n\n".join(sections))]
+
+
+@_s.mcp.resource("ynab://payees/{budget_id}")
+async def list_payees_resource(budget_id: str) -> list[types.TextContent]:
+    """List payees for a budget — name, ID, and transfer_account_id.
+
+    Fetches live from the YNAB API and caches the result in ynab_resources.
+    """
+    async with await _s.get_ynab_client() as client:
+        payees_api = _s.PayeesApi(client)
+        response = payees_api.get_payees(budget_id)
+        payees = response.data.payees or []
+
+    active = [p for p in payees if not getattr(p, "deleted", False)]
+    raw = [
+        {
+            "id": getattr(p, "id", None),
+            "name": getattr(p, "name", None),
+            "transfer_account_id": getattr(p, "transfer_account_id", None),
+        }
+        for p in active
+    ]
+    _s.ynab_resources.cache_payees(budget_id, raw)
+
+    if not active:
+        return [
+            types.TextContent(
+                type="text", text=f"# YNAB Payees ({budget_id})\n\n_No payees found._"
+            )
+        ]
+
+    headers = ["Name", "ID", "Transfer Account ID"]
+    rows = [[r["name"] or "", r["id"] or "", r["transfer_account_id"] or ""] for r in raw]
+    markdown = f"# YNAB Payees ({budget_id})\n\n" + _build_markdown_table(rows, headers)
+    return [types.TextContent(type="text", text=markdown)]
+
+
 async def _fetch_month_text(budget_id: str, month: str) -> list[types.TextContent]:
     """Fetch a month snapshot and return it as a single TextContent block."""
     async with await _s.get_ynab_client() as client:

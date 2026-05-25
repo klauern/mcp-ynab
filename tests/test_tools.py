@@ -1452,6 +1452,95 @@ async def test_delete_transaction_propagates_api_exception(
         await server.delete_transaction("b-1", "t-missing")
 
 
+@pytest.mark.asyncio
+async def test_delete_transaction_elicits_confirmation_and_proceeds_when_confirmed(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    txn_mock = MagicMock()
+    txn_mock.amount = -42_500
+    txn_mock.payee_name = "Amazon"
+    txn_mock.category_name = "Shopping"
+    txn_mock.memo = None
+    txn_mock.var_date = None
+    txn_mock.date = "2026-05-10"
+    mock_ynab_apis.transactions.get_transaction_by_id.return_value = _resp(transaction=txn_mock)
+    mock_ynab_apis.transactions.delete_transaction.return_value = MagicMock()
+
+    ctx = _FakeContext(_accept_confirm(True))
+    result = await server.delete_transaction("b-1", "t-42", ctx=ctx)
+
+    assert "deleted" in result.lower()
+    assert len(ctx.calls) == 1
+    message, _schema = ctx.calls[0]
+    assert "Amazon" in message
+    assert "$42.50" in message
+    assert "outflow" in message
+    mock_ynab_apis.transactions.delete_transaction.assert_called_once_with("b-1", "t-42")
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_returns_cancelled_when_user_declines(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    txn_mock = MagicMock()
+    txn_mock.amount = -10_000
+    txn_mock.payee_name = "Netflix"
+    txn_mock.category_name = "Subscriptions"
+    txn_mock.memo = None
+    txn_mock.var_date = None
+    txn_mock.date = "2026-05-01"
+    mock_ynab_apis.transactions.get_transaction_by_id.return_value = _resp(transaction=txn_mock)
+
+    ctx = _FakeContext(_accept_confirm(False))
+    result = await server.delete_transaction("b-1", "t-99", ctx=ctx)
+
+    assert "cancelled" in result.lower()
+    mock_ynab_apis.transactions.delete_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_returns_cancelled_when_user_dismisses(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    txn_mock = MagicMock()
+    txn_mock.amount = -5_000
+    txn_mock.payee_name = "Gym"
+    txn_mock.category_name = None
+    txn_mock.memo = None
+    txn_mock.var_date = None
+    txn_mock.date = "2026-05-15"
+    mock_ynab_apis.transactions.get_transaction_by_id.return_value = _resp(transaction=txn_mock)
+
+    ctx = _FakeContext(SimpleNamespace(action="cancel"))
+    result = await server.delete_transaction("b-1", "t-88", ctx=ctx)
+
+    assert "cancelled" in result.lower()
+    mock_ynab_apis.transactions.delete_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_transaction_skips_confirmation_when_pref_disabled(
+    mock_ynab_apis: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """confirm_before_post=False skips elicitation and deletes directly."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.update_preferences(confirm_before_post=False)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.transactions.delete_transaction.return_value = MagicMock()
+
+    ctx = _QueuedFakeContext([])  # would raise if any elicit happened
+    result = await server.delete_transaction("b-1", "t-42", ctx=ctx)
+
+    assert "deleted" in result.lower()
+    assert ctx.calls == []
+    mock_ynab_apis.transactions.delete_transaction.assert_called_once_with("b-1", "t-42")
+    mock_ynab_apis.transactions.get_transaction_by_id.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # split_transaction (idempotent mutating tool)
 # ---------------------------------------------------------------------------
@@ -1896,6 +1985,96 @@ async def test_get_scheduled_transactions_renders_amount_columns(
     assert "Main" in result
     assert "monthly" in result
     assert "$1,500.00" in result
+
+
+# ---------------------------------------------------------------------------
+# create_scheduled_transaction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_basic(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    created = MagicMock()
+    created.id = "sched-abc"
+    created.payee_name = "Netflix"
+    created.account_name = "Checking"
+    mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=created
+    )
+
+    result = await server.create_scheduled_transaction(
+        "b-1", "acct-1", -15.99, frequency="monthly", payee_name="Netflix"
+    )
+
+    assert "sched-abc" in result
+    assert "Netflix" in result
+    assert "monthly" in result
+    assert "-$15.99" in result
+
+    call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
+    budget_id, wrapper = call.args
+    assert budget_id == "b-1"
+    txn = wrapper.scheduled_transaction
+    assert txn.account_id == "acct-1"
+    assert txn.amount == -15990
+    assert txn.payee_name == "Netflix"
+    assert txn.frequency == "monthly"
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_rejects_payee_id_and_name() -> None:
+    with pytest.raises(ValueError, match="payee_id or payee_name, not both"):
+        await server.create_scheduled_transaction(
+            "b-1",
+            "acct-1",
+            -15.99,
+            payee_id="payee-1",
+            payee_name="Netflix",
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_uses_start_date(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    created = MagicMock()
+    created.id = "sched-xyz"
+    created.payee_name = "Landlord"
+    created.account_name = "Checking"
+    mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=created
+    )
+
+    await server.create_scheduled_transaction("b-1", "acct-1", -1500.00, start_date="2026-06-01")
+
+    call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
+    _, wrapper = call.args
+    from datetime import date
+
+    assert wrapper.scheduled_transaction.var_date == date(2026, 6, 1)
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_defaults_to_today(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    from datetime import date
+
+    created = MagicMock()
+    created.id = "sched-def"
+    created.payee_name = "Gym"
+    created.account_name = "Checking"
+    mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=created
+    )
+
+    await server.create_scheduled_transaction("b-1", "acct-1", -50.00)
+
+    call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
+    _, wrapper = call.args
+    assert wrapper.scheduled_transaction.var_date == date.today()
 
 
 # ---------------------------------------------------------------------------
@@ -2745,6 +2924,35 @@ async def test_create_transaction_skips_confirmation_when_confirm_false(
 
 
 @pytest.mark.asyncio
+async def test_create_transaction_skips_confirmation_when_pref_disabled(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """confirm_before_post=False preference bypasses elicit even when confirm=True."""
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    isolated.set_preferred_budget_id("b-1")
+    isolated.update_preferences(confirm_before_post=False)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.transactions.create_transaction.return_value = _resp(
+        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-pref"})
+    )
+    ctx = _QueuedFakeContext([])  # would raise if any elicit happened
+
+    result = await server.create_transaction(
+        account_id="acct-1",
+        amount=-10.0,
+        payee_name="Bookstore",
+        confirm=True,  # per-call confirm=True, but preference overrides
+        ctx=ctx,
+    )
+
+    assert result == {"id": "t-pref"}
+    assert ctx.calls == []
+    mock_ynab_apis.transactions.create_transaction.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_create_transaction_posts_after_confirmation_accepted(
     mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -2886,3 +3094,270 @@ async def test_create_transaction_chains_category_then_confirmation(
     # Confirmation message reflects the *chosen* category, not the user's input.
     confirm_msg = ctx.calls[1][0]
     assert "Groceries (Household)" in confirm_msg
+
+
+# ---------------------------------------------------------------------------
+# ynab://payees/{budget_id} resource (list_payees_resource)
+# ---------------------------------------------------------------------------
+
+
+def _payee_mock(
+    payee_id: str,
+    name: str,
+    transfer_account_id: str | None = None,
+    *,
+    deleted: bool = False,
+) -> MagicMock:
+    """Build a payee mock with the attrs read by list_payees_resource."""
+    payee = MagicMock()
+    payee.id = payee_id
+    payee.name = name
+    payee.transfer_account_id = transfer_account_id
+    payee.deleted = deleted
+    return payee
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_renders_markdown_table(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.payees.get_payees.return_value = _resp(
+        payees=[
+            _payee_mock("p-1", "Amazon"),
+            _payee_mock("p-2", "Transfer: Savings", transfer_account_id="acct-99"),
+        ]
+    )
+
+    result = await server.list_payees_resource("b-1")
+
+    assert len(result) == 1
+    text = result[0].text
+    assert text.startswith("# YNAB Payees (b-1)")
+    assert "Amazon" in text
+    assert "p-1" in text
+    assert "Transfer: Savings" in text
+    assert "p-2" in text
+    assert "acct-99" in text
+    mock_ynab_apis.payees.get_payees.assert_called_once_with("b-1")
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_handles_empty_list(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.payees.get_payees.return_value = _resp(payees=[])
+
+    result = await server.list_payees_resource("b-1")
+
+    assert len(result) == 1
+    assert "_No payees found._" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_filters_deleted_payees(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.payees.get_payees.return_value = _resp(
+        payees=[
+            _payee_mock("p-active", "Active Payee"),
+            _payee_mock("p-del", "Deleted Payee", deleted=True),
+        ]
+    )
+
+    result = await server.list_payees_resource("b-1")
+
+    text = result[0].text
+    assert "Active Payee" in text
+    assert "p-active" in text
+    assert "Deleted Payee" not in text
+    assert "p-del" not in text
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_caches_results(
+    mock_ynab_apis: SimpleNamespace,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    mock_ynab_apis.payees.get_payees.return_value = _resp(
+        payees=[_payee_mock("p-1", "Grocery Store")]
+    )
+
+    await server.list_payees_resource("b-1")
+
+    cached = isolated.get_cached_payee_records("b-1")
+    assert len(cached) == 1
+    assert cached[0]["id"] == "p-1"
+    assert cached[0]["name"] == "Grocery Store"
+    assert cached[0]["transfer_account_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# ynab://categories/{budget_id}/current resource (list_enriched_categories_resource)
+# ---------------------------------------------------------------------------
+
+
+def _category_enriched_mock(
+    cat_id: str,
+    name: str,
+    budgeted: int = 100_000,
+    activity: int = -50_000,
+    balance: int = 50_000,
+    *,
+    deleted: bool = False,
+) -> MagicMock:
+    """Build a category mock with budgeted/activity/balance attrs."""
+    cat = MagicMock()
+    cat.id = cat_id
+    cat.name = name
+    cat.budgeted = budgeted
+    cat.activity = activity
+    cat.balance = balance
+    cat.deleted = deleted
+    return cat
+
+
+def _category_group_enriched_mock(
+    name: str, categories: list[MagicMock], *, deleted: bool = False
+) -> MagicMock:
+    group = MagicMock()
+    group.name = name
+    group.categories = categories
+    group.deleted = deleted
+    return group
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_renders_markdown_table(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[
+            _category_group_enriched_mock(
+                "Food",
+                [
+                    _category_enriched_mock("c-1", "Groceries", 200_000, -80_000, 120_000),
+                    _category_enriched_mock("c-2", "Dining Out", 100_000, -30_000, 70_000),
+                ],
+            )
+        ]
+    )
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    assert len(result) == 1
+    text = result[0].text
+    assert "YNAB Categories" in text
+    assert "Food" in text
+    assert "Groceries" in text
+    assert "c-1" in text
+    assert "Dining Out" in text
+    mock_ynab_apis.categories.get_categories.assert_called_once_with("b-1")
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_handles_empty(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(category_groups=[])
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    assert len(result) == 1
+    assert "_No categories found._" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_filters_deleted(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[
+            _category_group_enriched_mock(
+                "Bills",
+                [
+                    _category_enriched_mock("c-active", "Rent"),
+                    _category_enriched_mock("c-del", "Old Category", deleted=True),
+                ],
+            )
+        ]
+    )
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    text = result[0].text
+    assert "Rent" in text
+    assert "c-active" in text
+    assert "Old Category" not in text
+    assert "c-del" not in text
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_filters_deleted_groups(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[
+            _category_group_enriched_mock(
+                "Deleted Group",
+                [_category_enriched_mock("c-stale", "Stale Category")],
+                deleted=True,
+            ),
+            _category_group_enriched_mock(
+                "Active Group",
+                [_category_enriched_mock("c-active", "Active Category")],
+            ),
+        ]
+    )
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    text = result[0].text
+    assert "Active Group" in text
+    assert "Active Category" in text
+    assert "Deleted Group" not in text
+    assert "Stale Category" not in text
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_shows_balance_columns(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[
+            _category_group_enriched_mock(
+                "Food",
+                [_category_enriched_mock("c-1", "Groceries", 200_000, -80_000, 120_000)],
+            )
+        ]
+    )
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    text = result[0].text
+    # budgeted=$200, activity=$80, balance=$120
+    assert "$200.00" in text
+    assert "$80.00" in text
+    assert "$120.00" in text

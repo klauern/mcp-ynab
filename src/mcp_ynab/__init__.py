@@ -5,6 +5,7 @@ Exposes a CLI entry point (`mcp-ynab`) that runs the FastMCP server defined in
 """
 
 import argparse
+from importlib.metadata import PackageNotFoundError, version
 import signal
 import sys
 from typing import NoReturn
@@ -12,6 +13,12 @@ from typing import NoReturn
 from dotenv import load_dotenv
 
 from .server import mcp
+
+__version__: str
+try:
+    __version__ = version("mcp-ynab")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
 
 
 def handle_sigint(signum, frame):
@@ -24,6 +31,7 @@ def main() -> NoReturn:
     """Entry point for the YNAB MCP server."""
     parser = argparse.ArgumentParser(description="YNAB (You Need A Budget) API integration for MCP")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args()
 
     # Load environment variables from .env file

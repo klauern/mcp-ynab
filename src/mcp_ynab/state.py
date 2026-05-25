@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 PREFERENCES_FILENAME = "preferences.json"
 CATEGORY_CACHE_FILENAME = "category_cache.json"
+PAYEES_CACHE_FILENAME = "payees_cache.json"
 LEGACY_PREFERRED_BUDGET_FILENAME = "preferred_budget_id.json"
 LEGACY_CATEGORY_CACHE_FILENAME = "budget_category_cache.json"
 PREF_ENV_PREFIX = "MCP_YNAB_"
@@ -224,10 +225,12 @@ class YNABResources:
         self._config_dir = _resolve_config_dir(config_dir)
         self._preferences_file = self._config_dir / PREFERENCES_FILENAME
         self._category_cache_file = self._config_dir / CATEGORY_CACHE_FILENAME
+        self._payees_cache_file = self._config_dir / PAYEES_CACHE_FILENAME
         self._migrate_legacy_files_if_needed()
         self._preferences: Preferences = load_preferences(self._config_dir)
         # On-disk shape: {budget_id: {"last_refreshed": iso8601 | None, "records": [...]}}.
         self._category_cache: Dict[str, Dict[str, Any]] = _load_json_file(self._category_cache_file)
+        self._payees_cache: Dict[str, Dict[str, Any]] = _load_json_file(self._payees_cache_file)
 
     def _migrate_legacy_files_if_needed(self) -> None:
         """One-shot lift of legacy files into the new layout. Idempotent.
@@ -344,6 +347,28 @@ class YNABResources:
             ],
         }
         _atomic_write_json(self._category_cache_file, self._category_cache)
+
+    def get_cached_payee_records(self, budget_id: str) -> List[Dict[str, Any]]:
+        """Return raw cached payee records ({id, name, transfer_account_id}) for a budget."""
+        envelope = self._payees_cache.get(budget_id)
+        if not envelope:
+            return []
+        return list(envelope.get("records", []))
+
+    def cache_payees(self, budget_id: str, payees: List[Dict[str, Any]]) -> None:
+        """Cache payees for a budget ID, stamping ``last_refreshed`` to now."""
+        self._payees_cache[budget_id] = {
+            "last_refreshed": _utcnow_iso(),
+            "records": [
+                {
+                    "id": p.get("id"),
+                    "name": p.get("name"),
+                    "transfer_account_id": p.get("transfer_account_id"),
+                }
+                for p in payees
+            ],
+        }
+        _atomic_write_json(self._payees_cache_file, self._payees_cache)
 
     def get_last_refreshed(self, budget_id: str) -> Optional[datetime]:
         """Return when ``budget_id`` was last refreshed, or None if never (or no entry)."""

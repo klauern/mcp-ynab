@@ -108,7 +108,11 @@ async def get_accounts(budget_id: str) -> str:
 
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
 async def get_categories(budget_id: str) -> str:
-    """List all transaction categories for a given YNAB budget in Markdown format."""
+    """List all transaction categories for a given YNAB budget in Markdown format.
+
+    Note: YNAB API v1 does not expose a create-category endpoint. Categories
+    can only be created in the YNAB web or mobile app; this tool is read-only.
+    """
     async with await _s.get_ynab_client() as client:
         categories_api = _s.CategoriesApi(client)
         response = categories_api.get_categories(budget_id)
@@ -243,17 +247,74 @@ async def assign_money(
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
 async def move_money(
     budget_id: str,
-    from_category_id: str,
-    to_category_id: str,
-    amount: float,
+    from_category_id: Optional[str] = None,
+    to_category_id: Optional[str] = None,
+    amount: Optional[float] = None,
     month: str = "current",
+    ctx: Optional[Context] = None,
 ) -> str:
     """Reallocate money from one category to another in a month (YNAB Rule 3).
+
+    When ``from_category_id`` or ``to_category_id`` are omitted and an MCP
+    context is available, the user is prompted to choose from the cached
+    category list (refreshed from the API if the cache is empty).
 
     NOT idempotent — running twice doubles the move. Not transactional in
     YNAB: if the credit step fails after the debit succeeds, the error
     message includes the partially-applied state for manual recovery.
     """
+    if amount is None:
+        raise ValueError("move_money requires an amount.")
+
+    # Elicit missing category IDs before opening the YNAB client for the move.
+    if (from_category_id is None or to_category_id is None) and ctx is not None:
+        records = _s.ynab_resources.get_cached_category_records(budget_id)
+        if not records:
+            async with await _s.get_ynab_client() as _client:
+                cats_api = _s.CategoriesApi(_client)
+                response = cats_api.get_categories(budget_id)
+                raw: List[Any] = []
+                for group in response.data.category_groups:
+                    if isinstance(group, CategoryGroupWithCategories):
+                        raw.extend(group.categories)
+                _s.ynab_resources.cache_categories(budget_id, [c.to_dict() for c in raw])
+                records = _s.ynab_resources.get_cached_category_records(budget_id)
+
+        if records:
+            options = "\n".join(
+                f"{i + 1}. {r.get('name', 'Unknown')}"
+                + (f" — {r.get('group')}" if r.get("group") else "")
+                for i, r in enumerate(records)
+            )
+
+            if from_category_id is None:
+                msg = f"Choose the source category (move money FROM):\n{options}"
+                result = await ctx.elicit(message=msg, schema=_s._CategoryChoice)
+                if result.action != "accept" or result.data.index == 0:
+                    return "move_money cancelled: no source category selected."
+                idx = result.data.index
+                if idx < 1 or idx > len(records):
+                    raise ValueError(f"Source index {idx} out of range 1..{len(records)}.")
+                from_category_id = records[idx - 1]["id"]
+
+            if to_category_id is None:
+                msg = f"Choose the destination category (move money TO):\n{options}"
+                result = await ctx.elicit(message=msg, schema=_s._CategoryChoice)
+                if result.action != "accept" or result.data.index == 0:
+                    return "move_money cancelled: no destination category selected."
+                idx = result.data.index
+                if idx < 1 or idx > len(records):
+                    raise ValueError(f"Destination index {idx} out of range 1..{len(records)}.")
+                to_category_id = records[idx - 1]["id"]
+
+    if from_category_id is None or to_category_id is None:
+        raise ValueError(
+            "move_money requires from_category_id and to_category_id. "
+            "Provide them explicitly or pass an MCP context for interactive selection."
+        )
+    if from_category_id == to_category_id:
+        raise ValueError("from_category_id and to_category_id must be different.")
+
     delta = int(amount * 1000)
     m = _resolve_month(month)
     async with await _s.get_ynab_client() as client:
@@ -305,6 +366,10 @@ async def update_category(
 
     At least one of `name`, `note`, or `category_group_id` must be provided.
     Idempotent: applying the same values twice leaves the category unchanged.
+
+    Note: YNAB API v1 does not support setting goals via API. Goal fields
+    (goal_type, goal_target, etc.) appear on the read model but the write
+    model (SaveCategory) only accepts name, note, and category_group_id.
 
     Args:
         budget_id: The YNAB budget ID.

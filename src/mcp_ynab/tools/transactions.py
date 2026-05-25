@@ -19,7 +19,9 @@ from ynab.api_client import ApiClient
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
 from ynab.models.new_transaction import NewTransaction
 from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
+from ynab.models.post_scheduled_transaction_wrapper import PostScheduledTransactionWrapper
 from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
+from ynab.models.save_scheduled_transaction import SaveScheduledTransaction
 from ynab.models.save_sub_transaction import SaveSubTransaction
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 from ynab.models.transaction_detail import TransactionDetail
@@ -253,7 +255,15 @@ async def _confirm_create_transaction(
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
 async def create_transaction(
     account_id: str,
-    amount: Annotated[float, Field(description="Amount in dollars")],
+    amount: Annotated[
+        float,
+        Field(
+            description=(
+                "Amount in dollars. Negative for outflows (expenses, e.g. -42.50), "
+                "positive for inflows (deposits, e.g. 1500.00)."
+            )
+        ),
+    ],
     payee_name: Optional[str] = None,
     payee_id: Annotated[
         Optional[str],
@@ -279,6 +289,10 @@ async def create_transaction(
 ) -> Dict[str, Any]:
     """Create a new transaction in YNAB.
 
+    ``amount`` is in dollars: negative for outflows (expenses), positive for
+    inflows. For example, -42.50 records a $42.50 expense; 1500.00 records a
+    $1,500 deposit.
+
     Provide exactly one of ``payee_name`` or ``payee_id``. To create a true
     account transfer, pass the destination account's transfer payee as
     ``payee_id``; YNAB does not accept transfer payees by name.
@@ -303,7 +317,8 @@ async def create_transaction(
         category_id = await _resolve_category_id(client, budget_id, category_name, ctx)
         txn_date = date.today()
 
-        if confirm and ctx is not None:
+        should_confirm = confirm and _s.ynab_resources.preferences.confirm_before_post
+        if should_confirm and ctx is not None:
             resolved_name = _category_display_name(budget_id, category_id)
             ok = await _confirm_create_transaction(
                 ctx,
@@ -1031,6 +1046,10 @@ async def get_scheduled_transactions(
 
     Filters server-side results to only those whose `date_next` is on or
     before today + `within_days`.
+
+    Note: YNAB API v1 does not expose update or delete endpoints for scheduled
+    transactions. Only creation (create_scheduled_transaction) and listing are
+    supported via API; changes must otherwise be made in the YNAB app.
     """
     cutoff = date.today() + timedelta(days=within_days)
 
@@ -1076,6 +1095,83 @@ async def get_scheduled_transactions(
     return markdown
 
 
+_FREQUENCY_VALUES = Literal[
+    "never",
+    "daily",
+    "weekly",
+    "everyOtherWeek",
+    "twiceAMonth",
+    "every4Weeks",
+    "monthly",
+    "everyOtherMonth",
+    "every3Months",
+    "every4Months",
+    "twiceAYear",
+    "yearly",
+    "everyOtherYear",
+]
+
+
+@_s.mcp.tool(annotations=_s.MUTATING_TOOL)
+async def create_scheduled_transaction(
+    budget_id: str,
+    account_id: str,
+    amount: float,
+    frequency: _FREQUENCY_VALUES = "monthly",
+    start_date: Optional[str] = None,
+    payee_id: Optional[str] = None,
+    payee_name: Optional[str] = None,
+    category_id: Optional[str] = None,
+    memo: Optional[str] = None,
+    flag_color: Optional[str] = None,
+) -> str:
+    """Create a new scheduled (recurring) transaction in a YNAB budget.
+
+    `amount` is in dollars; negative values are outflows (expenses), positive
+    are inflows (income). The value is converted to milliunits internally.
+
+    `start_date` is an ISO date string (YYYY-MM-DD); defaults to today.
+
+    Valid `frequency` values: never, daily, weekly, everyOtherWeek,
+    twiceAMonth, every4Weeks, monthly, everyOtherMonth, every3Months,
+    every4Months, twiceAYear, yearly, everyOtherYear.
+
+    Provide either `payee_id` (for an existing payee) or `payee_name`
+    (creates a new payee) — not both.
+    """
+    if payee_id is not None and payee_name is not None:
+        raise ValueError("create_scheduled_transaction accepts payee_id or payee_name, not both.")
+
+    txn_date = date.fromisoformat(start_date) if start_date else date.today()
+    amount_milliunits = int(round(amount * 1000))
+    txn = SaveScheduledTransaction(
+        account_id=account_id,
+        var_date=txn_date,
+        amount=amount_milliunits,
+        payee_id=payee_id,
+        payee_name=payee_name,
+        category_id=category_id,
+        memo=memo,
+        flag_color=flag_color,
+        frequency=frequency,
+    )
+    async with await _s.get_ynab_client() as client:
+        scheduled_api = _s.ScheduledTransactionsApi(client)
+        response = scheduled_api.create_scheduled_transaction(
+            budget_id, PostScheduledTransactionWrapper(scheduled_transaction=txn)
+        )
+        sched = response.data.scheduled_transaction
+    amount_str = f"${abs(amount):,.2f}" if amount >= 0 else f"-${abs(amount):,.2f}"
+    return (
+        f"Scheduled transaction created (ID: `{sched.id}`).\n"
+        f"- **Payee:** {getattr(sched, 'payee_name', payee_name or payee_id or 'N/A')}\n"
+        f"- **Amount:** {amount_str}\n"
+        f"- **Frequency:** {frequency}\n"
+        f"- **Start:** {txn_date.isoformat()}\n"
+        f"- **Account:** {getattr(sched, 'account_name', account_id)}\n"
+    )
+
+
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
 async def get_transactions_by_category(
     budget_id: str,
@@ -1111,12 +1207,21 @@ async def get_transactions_by_category(
 
 
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
-async def delete_transaction(budget_id: str, transaction_id: str) -> str:
+async def delete_transaction(
+    budget_id: str,
+    transaction_id: str,
+    ctx: Optional[Context] = None,
+) -> str:
     """Delete a transaction from a YNAB budget.
+
+    When an MCP context is available, fetches the transaction summary (date,
+    payee, amount, category) and elicits confirmation before deleting. If the
+    user declines or cancels, returns a cancellation message without deleting.
 
     Args:
         budget_id: The YNAB budget ID.
         transaction_id: The transaction ID to delete.
+        ctx: MCP context used to elicit confirmation (injected by FastMCP).
 
     Returns:
         A confirmation string. Raises ApiException on YNAB API errors (e.g.
@@ -1124,6 +1229,35 @@ async def delete_transaction(budget_id: str, transaction_id: str) -> str:
     """
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
+
+        if ctx is not None and _s.ynab_resources.preferences.confirm_before_post:
+            try:
+                txn_resp = transactions_api.get_transaction_by_id(budget_id, transaction_id)
+            except ApiException as exc:
+                if exc.status == 404:
+                    raise ValueError(
+                        f"Transaction {transaction_id} not found in budget {budget_id}."
+                    ) from exc
+                raise
+            txn = txn_resp.data.transaction
+            amount_dollars = float(getattr(txn, "amount", 0)) / 1000
+            payee = getattr(txn, "payee_name", None) or "Unknown payee"
+            txn_date = _txn_date_iso(txn)
+            category = getattr(txn, "category_name", None) or "Uncategorized"
+            memo_part = f" — {txn.memo}" if getattr(txn, "memo", None) else ""
+            message = (
+                f"Delete transaction?\n"
+                f"- **Date:** {txn_date}\n"
+                f"- **Payee:** {payee}\n"
+                f"- **Amount:** ${abs(amount_dollars):.2f}"
+                f" ({'outflow' if amount_dollars < 0 else 'inflow'})\n"
+                f"- **Category:** {category}{memo_part}\n\n"
+                "This cannot be undone."
+            )
+            result = await ctx.elicit(message=message, schema=_PostConfirmation)
+            if result.action != "accept" or not result.data.confirm:
+                return f"Delete of transaction {transaction_id} cancelled."
+
         transactions_api.delete_transaction(budget_id, transaction_id)
     return f"Transaction {transaction_id} deleted from budget {budget_id}."
 

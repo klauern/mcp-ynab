@@ -81,6 +81,7 @@ def mock_ynab_apis(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(
         server, "ScheduledTransactionsApi", lambda client: apis.scheduled_transactions
     )
+    monkeypatch.setattr(server, "PayeesApi", lambda client: apis.payees)
     monkeypatch.setattr(server, "UserApi", lambda client: apis.users)
 
     return apis

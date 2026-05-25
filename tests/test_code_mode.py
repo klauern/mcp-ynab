@@ -266,3 +266,51 @@ async def test_execute_clamps_non_positive_timeout(
 
     assert result == {"ok": True}
     assert captured["timeout_s"] == 0.1
+
+
+# -- Safe builtins expansion (mcp-ynab-22k) ------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("return any([False, True, False])", True),
+        ("return all([True, True, True])", True),
+        ("return all([True, False])", False),
+        ("return abs(-42)", 42),
+        ("return round(3.7)", 4),
+        ("return round(3.141, 2)", 3.14),
+        ("return hasattr({'a': 1}, 'keys')", True),
+        ("return isinstance(42, int)", True),
+        ("return isinstance('hello', str)", True),
+        ("return isinstance(3.14, float)", True),
+    ],
+)
+async def test_expanded_safe_builtins_are_available(code: str, expected: object) -> None:
+    """Newly added builtins (any, all, abs, round, hasattr, isinstance) work in snippets."""
+    result = await run_code(code, mcp=_mcp())
+    assert result.ok is True, result.error
+    assert result.result == expected
+
+
+@pytest.mark.asyncio
+async def test_hasattr_dunder_string_is_blocked_by_audit() -> None:
+    """hasattr with a dunder literal is blocked by the dunder-string-literal audit."""
+    result = await run_code(
+        'return hasattr({}, "__class__")',
+        mcp=_mcp(),
+    )
+    assert result.ok is False
+    assert "dunder string literal" in result.error
+
+
+@pytest.mark.asyncio
+async def test_isinstance_useful_for_type_filtering() -> None:
+    """isinstance lets snippets filter heterogeneous lists without type()."""
+    result = await run_code(
+        "items = [1, 'a', 2, 'b']\nreturn [x for x in items if isinstance(x, int)]",
+        mcp=_mcp(),
+    )
+    assert result.ok is True
+    assert result.result == [1, 2]

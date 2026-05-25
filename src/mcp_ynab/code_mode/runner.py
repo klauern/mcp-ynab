@@ -36,12 +36,17 @@ FORBIDDEN_NAMES = {
 }
 
 SAFE_BUILTINS = {
+    "abs": abs,
+    "all": all,
+    "any": any,
     "bool": bool,
     "dict": dict,
     "enumerate": enumerate,
     "False": False,
     "float": float,
+    "hasattr": hasattr,
     "int": int,
+    "isinstance": isinstance,
     "len": len,
     "list": list,
     "max": max,
@@ -49,6 +54,7 @@ SAFE_BUILTINS = {
     "None": None,
     "print": print,
     "range": range,
+    "round": round,
     "set": set,
     "sorted": sorted,
     "str": str,

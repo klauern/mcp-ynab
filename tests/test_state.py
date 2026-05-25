@@ -442,3 +442,85 @@ def test_get_preferred_budget_id_resource_still_works(
     assert server.get_preferred_budget_id() == "b-77"
     contents = server.get_preferences_resource()
     assert "b-77" in contents[0].text
+
+
+# -- set_preference for code_mode_* fields (6ha.5) ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_preference_code_mode_enabled_bool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code_mode_enabled accepts the same bool grammar as other bool prefs."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    await server.set_preference("code_mode_enabled", "false")
+    assert isolated.preferences.code_mode_enabled is False
+
+    await server.set_preference("code_mode_enabled", "1")
+    assert isolated.preferences.code_mode_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_set_preference_code_mode_replace_tools_bool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code_mode_replace_tools persists via set_preference."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    await server.set_preference("code_mode_replace_tools", "false")
+    assert isolated.preferences.code_mode_replace_tools is False
+
+
+@pytest.mark.asyncio
+async def test_set_preference_code_mode_timeout_float(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code_mode_timeout_s accepts a valid float string."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    result = await server.set_preference("code_mode_timeout_s", "30.5")
+    assert isolated.preferences.code_mode_timeout_s == 30.5
+    assert "30.5" in result
+
+
+@pytest.mark.asyncio
+async def test_set_preference_code_mode_timeout_rejects_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gt=0 on code_mode_timeout_s rejects 0 (even though float('0') is valid)."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    with pytest.raises(Exception):  # ValidationError — gt=0
+        await server.set_preference("code_mode_timeout_s", "0")
+
+
+@pytest.mark.asyncio
+async def test_set_preference_code_mode_timeout_rejects_above_sixty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """le=60 on code_mode_timeout_s rejects values above the ceiling."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    with pytest.raises(Exception):  # ValidationError — le=60
+        await server.set_preference("code_mode_timeout_s", "61")
+
+
+@pytest.mark.asyncio
+async def test_set_preference_code_mode_max_output_chars_int(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code_mode_max_output_chars accepts zero and positive int values."""
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+
+    await server.set_preference("code_mode_max_output_chars", "0")
+    assert isolated.preferences.code_mode_max_output_chars == 0
+
+    await server.set_preference("code_mode_max_output_chars", "4096")
+    assert isolated.preferences.code_mode_max_output_chars == 4096

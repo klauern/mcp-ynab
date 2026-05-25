@@ -102,3 +102,79 @@ result = await ynab.write.bulk_categorize(assignments=assignments)
 print("categorized", len(assignments), "transactions")
 return result
 ```
+
+## Bulk approve unreviewed transactions
+
+Approves all unapproved transactions from the attention queue in one round-trip.
+Requires `code_mode_mutations_enabled=true`.
+
+```python
+transactions = await ynab.read.get_transactions_needing_attention()
+
+unapproved = [txn.id for txn in transactions if not getattr(txn, "approved", False)]
+
+if not unapproved:
+    return {"approved": 0, "reason": "all transactions already approved"}
+
+budget_id = getattr(transactions[0], "budget_id", None)
+if not budget_id:
+    return {"approved": 0, "reason": "could not infer budget_id from transactions"}
+
+result = await ynab.write.approve_transactions(
+    budget_id=budget_id,
+    transaction_ids=unapproved[:LIMIT],
+)
+print("approved", len(unapproved[:LIMIT]), "transactions")
+return result
+```
+
+## Spending by category — current month
+
+Returns a preformatted markdown table of outflows grouped by category.
+
+```python
+budgets = await ynab.read.get_budgets()
+budget_id = budgets[0].id  # use the first budget, or hard-code your preferred ID
+
+return await ynab.read.spending_by_category(
+    budget_id=budget_id,
+    period="this_month",
+    top_n=20,
+)
+```
+
+## Transaction triage — group uncategorized by payee
+
+Groups uncategorized transactions by payee so you can spot which payees need
+category rules. Read-only — nothing is modified.
+
+```python
+transactions = await ynab.read.get_transactions_needing_attention()
+
+uncategorized = [t for t in transactions if not getattr(t, "category_id", None)]
+
+grouped: dict[str, list[str]] = {}
+for txn in uncategorized:
+    payee = txn.payee_name or "(no payee)"
+    grouped.setdefault(payee, []).append(txn.id)
+
+ranked = sorted(grouped.items(), key=lambda p: len(p[1]), reverse=True)
+return [
+    {"payee": payee, "count": len(ids), "sample_ids": ids[:3]}
+    for payee, ids in ranked[:LIMIT]
+]
+```
+
+## Spending by payee — last 30 days
+
+Top spenders over the last 30 days across all categories, returned as formatted markdown.
+
+```python
+budgets = await ynab.read.get_budgets()
+budget_id = budgets[0].id
+
+return await ynab.read.spending_by_payee(
+    budget_id=budget_id,
+    period="last_30d",
+    top_n=15,
+)

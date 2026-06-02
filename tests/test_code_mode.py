@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import inspect
+import os
+import typing
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Annotated, Any, Optional
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import mcp_ynab.server as server
 from mcp_ynab.code_mode import build_spec, generate_stubs, run_code, run_search
+from mcp_ynab.code_mode.stubs import _annotation_name, _field_description
 from mcp_ynab.state import Preferences
 
 
@@ -314,3 +319,82 @@ async def test_isinstance_useful_for_type_filtering() -> None:
     )
     assert result.ok is True
     assert result.result == [1, 2]
+
+
+# --- Stub generator quality tests (task mcp-ynab-fsv.3) ---
+
+_GOLDEN_PATH = Path(__file__).parent / "stubs.golden.pyi"
+
+
+def test_annotation_name_unwraps_annotated() -> None:
+    ann = Annotated[str, Field(description="some hint")]
+    assert _annotation_name(ann) == "str"
+
+
+def test_annotation_name_renders_optional_as_pipe() -> None:
+    assert _annotation_name(Optional[float]) == "float | None"
+
+
+def test_annotation_name_renders_generic_list() -> None:
+    ann = list[str]
+    assert _annotation_name(ann) == "list[str]"
+
+
+def test_annotation_name_renders_generic_dict() -> None:
+    ann = dict[str, Any]
+    assert _annotation_name(ann) == "dict[str, Any]"
+
+
+def test_annotation_name_unwraps_annotated_optional() -> None:
+    ann = Annotated[Optional[float], Field(description="dollars")]
+    assert _annotation_name(ann) == "float | None"
+
+
+def test_field_description_extracted_from_annotated() -> None:
+    param = inspect.Parameter(
+        "amount",
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        annotation=Annotated[float, Field(description="Dollars, negative=outflow.")],
+    )
+    assert _field_description(param) == "Dollars, negative=outflow."
+
+
+def test_field_description_returns_none_for_plain_type() -> None:
+    param = inspect.Parameter(
+        "budget_id",
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        annotation=str,
+    )
+    assert _field_description(param) is None
+
+
+def test_stubs_snapshot() -> None:
+    """Pin generated stubs to the golden file; run UPDATE_STUBS=1 to regenerate."""
+    stubs = generate_stubs(server.mcp, mutations_enabled=True)
+    if os.getenv("UPDATE_STUBS"):
+        _GOLDEN_PATH.write_text(stubs)
+        return
+    assert stubs == _GOLDEN_PATH.read_text(), (
+        "Generated stubs differ from the golden file. "
+        "Review the diff, then re-run with UPDATE_STUBS=1 to accept the new output."
+    )
+
+
+def test_stubs_type_annotations_are_clean() -> None:
+    """Verify Annotated and Optional are properly rendered in real server stubs."""
+    stubs = generate_stubs(server.mcp, mutations_enabled=True)
+    assert "Annotated" not in stubs, "Annotated wrappers should be unwrapped in stubs"
+    assert "FieldInfo" not in stubs, "FieldInfo metadata should not appear in stubs"
+    assert "Optional[" not in stubs, "Optional[...] syntax should be rendered as T | None in stubs"
+
+
+def test_build_spec_signatures_are_clean() -> None:
+    """build_spec signature field should use clean type names, not raw Annotated strings."""
+    entries = build_spec(server.mcp, mutations_enabled=True)
+    for entry in entries:
+        assert "Annotated" not in entry["signature"], (
+            f"Tool {entry['name']} has Annotated in build_spec signature"
+        )
+        assert "FieldInfo" not in entry["signature"], (
+            f"Tool {entry['name']} has FieldInfo in build_spec signature"
+        )

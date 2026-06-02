@@ -86,6 +86,38 @@ async def test_run_code_allows_write_namespace_when_mutations_enabled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_code_injects_none_ctx_into_proxied_tools() -> None:
+    """Code mode must inject ``ctx=None`` into proxied tools, never the live ctx.
+
+    The execute/code-mode session is already blocked awaiting the snippet, so a
+    tool that awaits ``ctx.elicit(...)`` would deadlock until the soft timeout.
+    All tool ctx uses are None-guarded, so injecting ``None`` makes them take
+    their non-interactive fallback path instead of hanging. Regression guard for
+    the ``delete_transaction``/``create_transaction`` code-mode hang.
+    """
+    received: dict[str, Any] = {}
+
+    async def needs_ctx(value: str, ctx: Any = None) -> dict[str, bool]:
+        received["ctx_is_none"] = ctx is None
+        return {"ctx_is_none": ctx is None}
+
+    tool = _tool("needs_ctx", needs_ctx, EchoArgs, read_only=True)
+    tool.context_kwarg = "ctx"  # FastMCP auto-detects a ctx param like this
+    mcp = SimpleNamespace(_tool_manager=SimpleNamespace(_tools={"needs_ctx": tool}))
+
+    sentinel = object()  # stand-in for the live, interactive MCP context
+    result = await run_code(
+        'return await ynab.read.needs_ctx(value="x")',
+        mcp=mcp,
+        ctx=sentinel,  # even when a real ctx is supplied...
+    )
+
+    assert result.ok is True, result.error
+    assert result.result == {"ctx_is_none": True}  # ...the tool must receive None
+    assert received["ctx_is_none"] is True
+
+
+@pytest.mark.asyncio
 async def test_run_code_rejects_imports_and_dunders() -> None:
     result = await run_code("import os\nreturn None", mcp=_mcp())
     assert result.ok is False

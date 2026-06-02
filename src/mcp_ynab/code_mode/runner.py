@@ -207,7 +207,13 @@ async def _call_tool(tool: Any, ctx: Any, kwargs: dict[str, Any]) -> Any:
     model = tool.fn_metadata.arg_model.model_validate(kwargs)
     validated = model.model_dump(exclude_none=False)
     if tool.context_kwarg:
-        validated["ctx"] = ctx
+        # Code mode executes inside an already-blocked execute() session, so the
+        # interactive ctx cannot service ctx.elicit(...) — awaiting it would
+        # deadlock until the soft timeout (the delete_transaction/create_transaction
+        # code-mode hang). Every tool's ctx use is None-guarded, so injecting None
+        # makes them take their non-interactive fallback path. Confirmation for
+        # code-mode writes is gated upstream by code_mode_mutations_enabled.
+        validated["ctx"] = None
     result = tool.fn(**validated)
     if inspect.isawaitable(result):
         return await result

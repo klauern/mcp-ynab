@@ -2078,6 +2078,136 @@ async def test_create_scheduled_transaction_defaults_to_today(
 
 
 # ---------------------------------------------------------------------------
+# update_scheduled_transaction
+# ---------------------------------------------------------------------------
+
+
+def _current_sched(**overrides: object) -> MagicMock:
+    """A current scheduled-transaction detail for read-modify-write tests."""
+    sched = MagicMock()
+    sched.account_id = "old-acct"
+    sched.date_first = date(2026, 1, 15)
+    sched.amount = -9_990
+    sched.payee_id = "payee-1"
+    sched.payee_name = "Apple"
+    sched.category_id = "cat-1"
+    sched.memo = "subscription"
+    sched.flag_color = None
+    sched.frequency = "monthly"
+    for key, value in overrides.items():
+        setattr(sched, key, value)
+    return sched
+
+
+@pytest.mark.asyncio
+async def test_update_scheduled_transaction_repoints_account_preserving_fields(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.scheduled_transactions.get_scheduled_transaction_by_id.return_value = _resp(
+        scheduled_transaction=_current_sched()
+    )
+    updated = MagicMock()
+    updated.id = "sched-1"
+    updated.payee_name = "Apple"
+    updated.account_name = "NFCU CashRewards"
+    updated.account_id = "new-acct"
+    updated.amount = -9_990
+    updated.frequency = "monthly"
+    updated.date_next = date(2026, 7, 15)
+    mock_ynab_apis.scheduled_transactions.update_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=updated
+    )
+
+    result = await server.update_scheduled_transaction("b-1", "sched-1", account_id="new-acct")
+
+    assert "sched-1" in result
+    assert "NFCU CashRewards" in result
+
+    call = mock_ynab_apis.scheduled_transactions.update_scheduled_transaction.call_args
+    budget_id, sched_id, wrapper = call.args
+    assert (budget_id, sched_id) == ("b-1", "sched-1")
+    txn = wrapper.scheduled_transaction
+    # changed field
+    assert txn.account_id == "new-acct"
+    # preserved via read-modify-write
+    assert txn.amount == -9_990
+    assert txn.payee_id == "payee-1"
+    assert txn.category_id == "cat-1"
+    assert txn.memo == "subscription"
+    assert getattr(txn.frequency, "value", txn.frequency) == "monthly"
+    assert txn.var_date == date(2026, 1, 15)
+
+
+@pytest.mark.asyncio
+async def test_update_scheduled_transaction_rejects_payee_id_and_name() -> None:
+    with pytest.raises(ValueError, match="payee_id or payee_name, not both"):
+        await server.update_scheduled_transaction(
+            "b-1", "sched-1", payee_id="p-1", payee_name="Apple"
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_scheduled_transaction_overrides_amount_date_frequency(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.scheduled_transactions.get_scheduled_transaction_by_id.return_value = _resp(
+        scheduled_transaction=_current_sched()
+    )
+    updated = MagicMock()
+    updated.id = "sched-1"
+    updated.payee_name = "Apple"
+    updated.account_name = "Checking"
+    updated.account_id = "old-acct"
+    updated.amount = -25_000
+    updated.frequency = "weekly"
+    updated.date_next = date(2026, 6, 1)
+    mock_ynab_apis.scheduled_transactions.update_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=updated
+    )
+
+    await server.update_scheduled_transaction(
+        "b-1", "sched-1", amount=-25.00, start_date="2026-06-01", frequency="weekly"
+    )
+
+    _, _, wrapper = (
+        mock_ynab_apis.scheduled_transactions.update_scheduled_transaction.call_args.args
+    )
+    txn = wrapper.scheduled_transaction
+    assert txn.amount == -25_000  # dollars -> milliunits
+    assert txn.var_date == date(2026, 6, 1)
+    assert getattr(txn.frequency, "value", txn.frequency) == "weekly"
+
+
+# ---------------------------------------------------------------------------
+# delete_scheduled_transaction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_scheduled_transaction_returns_details(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    deleted = MagicMock()
+    deleted.id = "sched-1"
+    deleted.payee_name = "Hearth Display"
+    deleted.amount = -18_000
+    deleted.frequency = "monthly"
+    mock_ynab_apis.scheduled_transactions.delete_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=deleted
+    )
+
+    result = await server.delete_scheduled_transaction("b-1", "sched-1")
+
+    assert "sched-1" in result
+    assert "Hearth Display" in result
+    assert "-$18.00" in result
+    assert mock_ynab_apis.scheduled_transactions.delete_scheduled_transaction.call_args.args == (
+        "b-1",
+        "sched-1",
+    )
+
+
+# ---------------------------------------------------------------------------
 # get_transactions_by_category
 # ---------------------------------------------------------------------------
 

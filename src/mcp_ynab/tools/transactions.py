@@ -21,6 +21,7 @@ from ynab.models.new_transaction import NewTransaction
 from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
 from ynab.models.post_scheduled_transaction_wrapper import PostScheduledTransactionWrapper
 from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
+from ynab.models.put_scheduled_transaction_wrapper import PutScheduledTransactionWrapper
 from ynab.models.save_scheduled_transaction import SaveScheduledTransaction
 from ynab.models.save_sub_transaction import SaveSubTransaction
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
@@ -1047,9 +1048,8 @@ async def get_scheduled_transactions(
     Filters server-side results to only those whose `date_next` is on or
     before today + `within_days`.
 
-    Note: YNAB API v1 does not expose update or delete endpoints for scheduled
-    transactions. Only creation (create_scheduled_transaction) and listing are
-    supported via API; changes must otherwise be made in the YNAB app.
+    See also: create_scheduled_transaction, update_scheduled_transaction, and
+    delete_scheduled_transaction for managing the recurring series via the API.
     """
     cutoff = date.today() + timedelta(days=within_days)
 
@@ -1169,6 +1169,107 @@ async def create_scheduled_transaction(
         f"- **Frequency:** {frequency}\n"
         f"- **Start:** {txn_date.isoformat()}\n"
         f"- **Account:** {getattr(sched, 'account_name', account_id)}\n"
+    )
+
+
+@_s.mcp.tool(annotations=_s.MUTATING_TOOL)
+async def update_scheduled_transaction(
+    budget_id: str,
+    scheduled_transaction_id: str,
+    *,
+    account_id: Optional[str] = None,
+    amount: Annotated[
+        Optional[float],
+        Field(description="Dollars (negative=outflow, positive=inflow); converted to milliunits."),
+    ] = None,
+    frequency: Optional[_FREQUENCY_VALUES] = None,
+    start_date: Annotated[
+        Optional[str], Field(description="ISO date (YYYY-MM-DD); the recurrence anchor.")
+    ] = None,
+    payee_id: Optional[str] = None,
+    payee_name: Optional[str] = None,
+    category_id: Optional[str] = None,
+    memo: Optional[str] = None,
+    flag_color: Optional[str] = None,
+) -> str:
+    """Update an existing scheduled (recurring) transaction — the SERIES template.
+
+    Uses read-modify-write: any field you omit keeps its current value. This
+    edits the recurring series, not a single occurrence (YNAB has no
+    per-occurrence edit until an instance posts as a real transaction).
+
+    `amount` is in dollars (converted to milliunits). `start_date` is the ISO
+    recurrence anchor. Provide either `payee_id` or `payee_name`, not both.
+    Common use: re-point a series to a different card by passing `account_id`.
+    """
+    if payee_id is not None and payee_name is not None:
+        raise ValueError("update_scheduled_transaction accepts payee_id or payee_name, not both.")
+
+    async with await _s.get_ynab_client() as client:
+        scheduled_api = _s.ScheduledTransactionsApi(client)
+        current = scheduled_api.get_scheduled_transaction_by_id(
+            budget_id, scheduled_transaction_id
+        ).data.scheduled_transaction
+
+        if payee_id is not None or payee_name is not None:
+            new_payee_id, new_payee_name = payee_id, payee_name
+        else:
+            new_payee_id, new_payee_name = current.payee_id, None
+
+        txn = SaveScheduledTransaction(
+            account_id=account_id if account_id is not None else current.account_id,
+            var_date=date.fromisoformat(start_date) if start_date else current.date_first,
+            amount=int(round(amount * 1000)) if amount is not None else current.amount,
+            payee_id=new_payee_id,
+            payee_name=new_payee_name,
+            category_id=category_id if category_id is not None else current.category_id,
+            memo=memo if memo is not None else current.memo,
+            flag_color=flag_color if flag_color is not None else current.flag_color,
+            frequency=frequency if frequency is not None else current.frequency,
+        )
+        response = scheduled_api.update_scheduled_transaction(
+            budget_id,
+            scheduled_transaction_id,
+            PutScheduledTransactionWrapper(scheduled_transaction=txn),
+        )
+        sched = response.data.scheduled_transaction
+
+    amount_dollars = float(sched.amount) / 1000
+    amount_str = f"${abs(amount_dollars):,.2f}"
+    if amount_dollars < 0:
+        amount_str = f"-{amount_str}"
+    freq = getattr(sched.frequency, "value", sched.frequency)
+    return (
+        f"Scheduled transaction updated (ID: `{sched.id}`).\n"
+        f"- **Payee:** {sched.payee_name or sched.payee_id or 'N/A'}\n"
+        f"- **Amount:** {amount_str}\n"
+        f"- **Frequency:** {freq}\n"
+        f"- **Next:** {sched.date_next.isoformat() if sched.date_next else 'N/A'}\n"
+        f"- **Account:** {sched.account_name or sched.account_id}\n"
+    )
+
+
+@_s.mcp.tool(annotations=_s.MUTATING_TOOL)
+async def delete_scheduled_transaction(budget_id: str, scheduled_transaction_id: str) -> str:
+    """Delete a scheduled (recurring) transaction series from a YNAB budget.
+
+    Returns the deleted series' details so it can be recreated if needed.
+    """
+    async with await _s.get_ynab_client() as client:
+        scheduled_api = _s.ScheduledTransactionsApi(client)
+        response = scheduled_api.delete_scheduled_transaction(budget_id, scheduled_transaction_id)
+        sched = response.data.scheduled_transaction
+
+    amount_dollars = float(sched.amount) / 1000
+    amount_str = f"${abs(amount_dollars):,.2f}"
+    if amount_dollars < 0:
+        amount_str = f"-{amount_str}"
+    freq = getattr(sched.frequency, "value", sched.frequency)
+    return (
+        f"Deleted scheduled transaction `{sched.id}`.\n"
+        f"- **Payee:** {sched.payee_name or sched.payee_id or 'N/A'}\n"
+        f"- **Amount:** {amount_str}\n"
+        f"- **Frequency:** {freq}\n"
     )
 
 

@@ -209,6 +209,7 @@ from .tools.transactions import (  # noqa: E402, F401
     categorize_transaction,
     create_scheduled_transaction,
     create_transaction,
+    delete_scheduled_transaction,
     delete_transaction,
     find_account_transaction_subset_matches,
     get_account_reconciliation_profile,
@@ -218,6 +219,7 @@ from .tools.transactions import (  # noqa: E402, F401
     get_transactions_needing_attention,
     import_transactions,
     split_transaction,
+    update_scheduled_transaction,
     update_transaction,
 )
 from .prompts import (  # noqa: E402, F401

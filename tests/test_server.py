@@ -78,8 +78,11 @@ async def test_tools_include_annotations_for_read_only_and_mutating(
 @pytest.mark.asyncio
 async def test_get_client_reads_api_key_from_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("YNAB_API_KEY", raising=False)
-    # Block the keychain fallback so a developer's stored key can't satisfy this.
-    monkeypatch.setattr(server, "_resolve_api_key", lambda: None)
+    # Patch at the actual call site — _get_client() calls _resolve_api_key from
+    # mcp_ynab.client directly, so patching the server re-export is ineffective.
+    import mcp_ynab.client as _client_mod
+
+    monkeypatch.setattr(_client_mod, "_resolve_api_key", lambda: None)
 
     with pytest.raises(ValueError, match="YNAB_API_KEY"):
         await server._get_client()

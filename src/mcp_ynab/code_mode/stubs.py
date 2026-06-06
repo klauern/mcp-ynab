@@ -94,18 +94,36 @@ def _format_tool_stub(tool: Any) -> list[str]:
             param_descs.append((p.name, desc[:80] + "…" if len(desc) > 80 else desc))
 
     sig_line = f"    async def {tool.name}({method_params}) -> {return_type}:"
+    sig_lines = [sig_line]
+    if len(sig_line) > 120:
+        sig_lines = [f"    async def {tool.name}("]
+        sig_lines.extend(f"        {param}," for param in ["self", *params])
+        sig_lines.append(f"    ) -> {return_type}:")
 
     if not summary and not param_descs:
-        return [f"{sig_line} ..."]
+        return [*sig_lines[:-1], f"{sig_lines[-1]} ..."]
 
     if not param_descs:
-        return [sig_line, f'        """{summary}"""', "        ..."]
+        return [*sig_lines, f'        """{summary}"""', "        ..."]
 
-    doc = [sig_line, f'        """{summary}', "", "        Args:"]
+    doc = [*sig_lines, f'        """{summary}', "", "        Args:"]
     for name, desc in param_descs:
         doc.append(f"            {name}: {desc}")
     doc.extend(['        """', "        ..."])
     return doc
+
+
+def _stub_import_lines(lines: list[str]) -> list[str]:
+    stub_text = "\n".join(lines)
+    imports = []
+    if "date" in stub_text:
+        imports.append("from datetime import date")
+
+    typing_names = ["Any"]
+    if "Literal" in stub_text:
+        typing_names.append("Literal")
+    imports.append(f"from typing import {', '.join(typing_names)}")
+    return imports
 
 
 def _iter_mcp_tools(mcp: Any) -> list[tuple[str, Any]]:
@@ -126,8 +144,7 @@ def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:
         target.extend(_format_tool_stub(tool))
         target.append("")
 
-    lines = [
-        "from typing import Any",
+    body_lines = [
         "",
         "class ReadNamespace:",
         *(read_lines or ["    pass"]),
@@ -136,10 +153,12 @@ def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:
         "class YNABNamespace:",
         "    read: ReadNamespace",
         "    write: WriteNamespace",
+        "",
         "ynab: YNABNamespace",
         "LIMIT: int",
         "",
     ]
+    lines = ["# fmt: off", *_stub_import_lines(body_lines), *body_lines]
     return "\n".join(lines)
 
 

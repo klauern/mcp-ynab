@@ -1,4 +1,5 @@
-from typing import Any
+from datetime import date
+from typing import Any, Literal
 
 class ReadNamespace:
     async def find_account_transaction_subset_matches(self, budget_id: str, account_id: str, target_amount: float, since_date: date | None = ..., tolerance: float = ..., max_subset_size: int = ..., candidate_limit: int = ...) -> dict[str, Any]:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import os
-import typing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated, Any, Optional

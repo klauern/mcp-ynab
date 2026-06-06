@@ -108,6 +108,19 @@ def _format_tool_stub(tool: Any) -> list[str]:
     return doc
 
 
+def _stub_import_lines(lines: list[str]) -> list[str]:
+    stub_text = "\n".join(lines)
+    imports = []
+    if "date" in stub_text:
+        imports.append("from datetime import date")
+
+    typing_names = ["Any"]
+    if "Literal" in stub_text:
+        typing_names.append("Literal")
+    imports.append(f"from typing import {', '.join(typing_names)}")
+    return imports
+
+
 def _iter_mcp_tools(mcp: Any) -> list[tuple[str, Any]]:
     # FastMCP has no stable public tool-enumeration API yet; isolate the
     # private access here so an mcp upgrade only needs one fix point.
@@ -126,8 +139,7 @@ def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:
         target.extend(_format_tool_stub(tool))
         target.append("")
 
-    lines = [
-        "from typing import Any",
+    body_lines = [
         "",
         "class ReadNamespace:",
         *(read_lines or ["    pass"]),
@@ -140,6 +152,7 @@ def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:
         "LIMIT: int",
         "",
     ]
+    lines = [*_stub_import_lines(body_lines), *body_lines]
     return "\n".join(lines)
 
 

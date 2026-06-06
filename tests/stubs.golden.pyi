@@ -1,8 +1,18 @@
+# fmt: off
 from datetime import date
 from typing import Any, Literal
 
 class ReadNamespace:
-    async def find_account_transaction_subset_matches(self, budget_id: str, account_id: str, target_amount: float, since_date: date | None = ..., tolerance: float = ..., max_subset_size: int = ..., candidate_limit: int = ...) -> dict[str, Any]:
+    async def find_account_transaction_subset_matches(
+        self,
+        budget_id: str,
+        account_id: str,
+        target_amount: float,
+        since_date: date | None = ...,
+        tolerance: float = ...,
+        max_subset_size: int = ...,
+        candidate_limit: int = ...,
+    ) -> dict[str, Any]:
         """Find compact transaction subsets whose amounts match a reconciliation difference.
 
         Args:
@@ -18,7 +28,15 @@ class ReadNamespace:
         """Get the current balance of a YNAB account (in dollars)."""
         ...
 
-    async def get_account_reconciliation_profile(self, budget_id: str, account_id: str, since_date: date | None = ..., cleared: Literal | None = ..., include_transfers: bool = ..., limit: int = ...) -> dict[str, Any]:
+    async def get_account_reconciliation_profile(
+        self,
+        budget_id: str,
+        account_id: str,
+        since_date: date | None = ...,
+        cleared: Literal | None = ...,
+        include_transfers: bool = ...,
+        limit: int = ...,
+    ) -> dict[str, Any]:
         """Return structured account balance and transaction status totals for reconciliation.
 
         Args:
@@ -80,7 +98,12 @@ class ReadNamespace:
         """
         ...
 
-    async def get_transactions_needing_attention(self, budget_id: str, filter_type: Literal = ..., days_back: int | None = ...) -> str:
+    async def get_transactions_needing_attention(
+        self,
+        budget_id: str,
+        filter_type: Literal = ...,
+        days_back: int | None = ...,
+    ) -> str:
         """List transactions that need attention based on specified filter type in a YNAB budget.
 
         Args:
@@ -97,7 +120,13 @@ class ReadNamespace:
         """Aggregate outflow spending by category over a named period."""
         ...
 
-    async def spending_by_payee(self, budget_id: str, period: Literal, top_n: int = ..., account_id: str | None = ...) -> str:
+    async def spending_by_payee(
+        self,
+        budget_id: str,
+        period: Literal,
+        top_n: int = ...,
+        account_id: str | None = ...,
+    ) -> str:
         """Aggregate outflow spending by payee over a named period."""
         ...
 
@@ -126,7 +155,13 @@ class WriteNamespace:
         """Force-fetch and cache categories for a budget id."""
         ...
 
-    async def categorize_transaction(self, budget_id: str, transaction_id: str, category_id: str, id_type: str = ...) -> str:
+    async def categorize_transaction(
+        self,
+        budget_id: str,
+        transaction_id: str,
+        category_id: str,
+        id_type: str = ...,
+    ) -> str:
         """Categorize a transaction for a given YNAB budget with the provided category ID."""
         ...
 
@@ -134,11 +169,32 @@ class WriteNamespace:
         """Remove the stored YNAB API key from the OS keychain (env var unaffected)."""
         ...
 
-    async def create_scheduled_transaction(self, budget_id: str, account_id: str, amount: float, frequency: Literal = ..., start_date: str | None = ..., payee_id: str | None = ..., payee_name: str | None = ..., category_id: str | None = ..., memo: str | None = ..., flag_color: str | None = ...) -> str:
+    async def create_scheduled_transaction(
+        self,
+        budget_id: str,
+        account_id: str,
+        amount: float,
+        frequency: Literal = ...,
+        start_date: str | None = ...,
+        payee_id: str | None = ...,
+        payee_name: str | None = ...,
+        category_id: str | None = ...,
+        memo: str | None = ...,
+        flag_color: str | None = ...,
+    ) -> str:
         """Create a new scheduled (recurring) transaction in a YNAB budget."""
         ...
 
-    async def create_transaction(self, account_id: str, amount: float, payee_name: str | None = ..., payee_id: str | None = ..., category_name: str | None = ..., memo: str | None = ..., confirm: bool = ...) -> dict[str, Any]:
+    async def create_transaction(
+        self,
+        account_id: str,
+        amount: float,
+        payee_name: str | None = ...,
+        payee_id: str | None = ...,
+        category_name: str | None = ...,
+        memo: str | None = ...,
+        confirm: bool = ...,
+    ) -> dict[str, Any]:
         """Create a new transaction in YNAB.
 
         Args:
@@ -156,11 +212,24 @@ class WriteNamespace:
         """Trigger YNAB to import transactions for any linked accounts in a budget."""
         ...
 
-    async def merge_payees(self, budget_id: str, source_payee_id: str, destination_payee_id: str, delete_source: bool = ...) -> str:
+    async def merge_payees(
+        self,
+        budget_id: str,
+        source_payee_id: str,
+        destination_payee_id: str,
+        delete_source: bool = ...,
+    ) -> str:
         """Move every transaction from `source_payee_id` to `destination_payee_id`."""
         ...
 
-    async def move_money(self, budget_id: str, from_category_id: str | None = ..., to_category_id: str | None = ..., amount: float | None = ..., month: str = ...) -> str:
+    async def move_money(
+        self,
+        budget_id: str,
+        from_category_id: str | None = ...,
+        to_category_id: str | None = ...,
+        amount: float | None = ...,
+        month: str = ...,
+    ) -> str:
         """Reallocate money from one category to another in a month (YNAB Rule 3)."""
         ...
 
@@ -192,11 +261,31 @@ class WriteNamespace:
         """
         ...
 
-    async def update_category(self, budget_id: str, category_id: str, name: str | None = ..., note: str | None = ..., category_group_id: str | None = ...) -> str:
+    async def update_category(
+        self,
+        budget_id: str,
+        category_id: str,
+        name: str | None = ...,
+        note: str | None = ...,
+        category_group_id: str | None = ...,
+    ) -> str:
         """Rename a category, update its note, or move it to a different category group."""
         ...
 
-    async def update_transaction(self, budget_id: str, transaction_id: str, memo: str | None = ..., payee_name: str | None = ..., payee_id: str | None = ..., amount: float | None = ..., txn_date: str | None = ..., flag_color: str | None = ..., cleared: str | None = ..., approved: bool | None = ..., category_id: str | None = ...) -> str:
+    async def update_transaction(
+        self,
+        budget_id: str,
+        transaction_id: str,
+        memo: str | None = ...,
+        payee_name: str | None = ...,
+        payee_id: str | None = ...,
+        amount: float | None = ...,
+        txn_date: str | None = ...,
+        flag_color: str | None = ...,
+        cleared: str | None = ...,
+        approved: bool | None = ...,
+        category_id: str | None = ...,
+    ) -> str:
         """Partially update a single transaction (PATCH-style).
 
         Args:
@@ -211,5 +300,6 @@ class WriteNamespace:
 class YNABNamespace:
     read: ReadNamespace
     write: WriteNamespace
+
 ynab: YNABNamespace
 LIMIT: int

@@ -94,14 +94,19 @@ def _format_tool_stub(tool: Any) -> list[str]:
             param_descs.append((p.name, desc[:80] + "…" if len(desc) > 80 else desc))
 
     sig_line = f"    async def {tool.name}({method_params}) -> {return_type}:"
+    sig_lines = [sig_line]
+    if len(sig_line) > 120:
+        sig_lines = [f"    async def {tool.name}("]
+        sig_lines.extend(f"        {param}," for param in ["self", *params])
+        sig_lines.append(f"    ) -> {return_type}:")
 
     if not summary and not param_descs:
-        return [f"{sig_line} ..."]
+        return [*sig_lines[:-1], f"{sig_lines[-1]} ..."]
 
     if not param_descs:
-        return [sig_line, f'        """{summary}"""', "        ..."]
+        return [*sig_lines, f'        """{summary}"""', "        ..."]
 
-    doc = [sig_line, f'        """{summary}', "", "        Args:"]
+    doc = [*sig_lines, f'        """{summary}', "", "        Args:"]
     for name, desc in param_descs:
         doc.append(f"            {name}: {desc}")
     doc.extend(['        """', "        ..."])
@@ -148,11 +153,12 @@ def generate_stubs(mcp: Any, *, mutations_enabled: bool = True) -> str:
         "class YNABNamespace:",
         "    read: ReadNamespace",
         "    write: WriteNamespace",
+        "",
         "ynab: YNABNamespace",
         "LIMIT: int",
         "",
     ]
-    lines = [*_stub_import_lines(body_lines), *body_lines]
+    lines = ["# fmt: off", *_stub_import_lines(body_lines), *body_lines]
     return "\n".join(lines)
 
 

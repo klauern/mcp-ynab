@@ -134,14 +134,20 @@ after mutation mode and any product-level confirmation flow are enabled.
 
 ## Runner limits
 
-The current runner is in-process and intentionally small. It blocks imports,
-common dynamic execution escape hatches, dunder access, f-strings, and
-`with`/`async with` blocks. It runs with a limited builtins allow-list and a soft `asyncio.wait_for`
-timeout. **This timeout is cooperative and cannot interrupt synchronous
-blocking or CPU-bound code** (e.g. `time.sleep`, tight loops). Blocking
-user code will stall the server until the event loop regains control.
-See issue `mcp-ynab-fkv` for the tracked fix.
+Each snippet runs in a fresh **child process**, not in the server process. The
+parent audits the snippet (blocking imports, dynamic-execution escape hatches,
+dunder access, f-strings, and `with`/`async with` blocks) *before* spawning, runs
+it under a limited builtins allow-list, and answers `ynab.read`/`ynab.write`
+calls over a stdio JSON-RPC bridge. The live MCP registry, the request `ctx`, and
+the YNAB client stay in the parent and never cross the process boundary.
 
-This is defense in depth, not a Python security boundary. Enable Code Mode only
-for trusted MCP clients and trusted prompt sources. Do not treat it as a
-sandbox for arbitrary user-supplied Python.
+Because the snippet runs in a separate process, the execution `timeout` is now a
+**hard wall clock**: on expiry the parent `kill()`s the child, so synchronous
+blocking or CPU-bound code (e.g. `time.sleep`, tight loops) is terminated rather
+than left to stall the server (this closes `mcp-ynab-fkv`).
+
+This is still defense in depth, not a complete sandbox. The process boundary
+contains crashes, hangs, and accidental blocking, but OS-level resource limits
+(RLIMIT) and syscall filtering (seccomp) are tracked separately (`mcp-ynab-fsv.1b`).
+Enable Code Mode only for trusted MCP clients and trusted prompt sources; do not
+treat it as a hardened sandbox for arbitrary adversarial Python.

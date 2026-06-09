@@ -1,25 +1,36 @@
-"""In-process Code Mode runner.
+"""Subprocess-isolated Code Mode runner.
 
-This runner is a convenience layer, not a Python security boundary. It rejects
-common escape hatches before running snippets under a small
-builtins allow-list and a gated ``ynab.read`` / ``ynab.write`` proxy.
+User snippets execute in a fresh child process (:mod:`mcp_ynab.code_mode._worker`)
+spawned per call, never in the parent. The parent:
+
+* audits the snippet (AST allow-list) *before* spawning,
+* holds the live MCP tool registry and the request ``ctx`` (neither crosses the
+  process boundary), and
+* answers ``ynab.read`` / ``ynab.write`` calls over a stdio JSON-RPC bridge.
+
+This gives a real OS process boundary: a hard ``kill()`` on timeout interrupts
+synchronous blocking user code (e.g. ``time.sleep``, CPU-bound loops) that the
+old in-process ``asyncio.wait_for`` could never stop (mcp-ynab-fkv). It is still
+not a complete security sandbox -- OS resource limits (RLIMIT) and syscall
+filtering (seccomp) are tracked separately (mcp-ynab-fsv.1b) -- but user code no
+longer runs in, or shares the address space of, the server process.
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
-import contextlib
 import inspect
-import io
-import json
-import textwrap
-import traceback as traceback_module
-from types import SimpleNamespace
+import os
+import sys
 from typing import Any
 
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
+
+from ._sandbox import encode_frame, read_frame, wrap_code
+
+_WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_worker.py")
 
 FORBIDDEN_NAMES = {
     "__import__",
@@ -33,35 +44,6 @@ FORBIDDEN_NAMES = {
     "open",
     "setattr",
     "vars",
-}
-
-SAFE_BUILTINS = {
-    "abs": abs,
-    "all": all,
-    "any": any,
-    "bool": bool,
-    "dict": dict,
-    "enumerate": enumerate,
-    "False": False,
-    "float": float,
-    "hasattr": hasattr,
-    "int": int,
-    "isinstance": isinstance,
-    "len": len,
-    "list": list,
-    "max": max,
-    "min": min,
-    "None": None,
-    "print": print,
-    "range": range,
-    "round": round,
-    "set": set,
-    "sorted": sorted,
-    "str": str,
-    "sum": sum,
-    "True": True,
-    "tuple": tuple,
-    "zip": zip,
 }
 
 
@@ -83,80 +65,6 @@ class CodeModeAuditError(ValueError):
 def _is_mutating_tool(tool: Any) -> bool:
     annotations = getattr(tool, "annotations", None)
     return not bool(getattr(annotations, "readOnlyHint", False))
-
-
-def _truncate(text: str, max_chars: int) -> tuple[str, bool]:
-    if max_chars < 0 or len(text) <= max_chars:
-        return text, False
-    suffix = "\n[... truncated]"
-    keep = max(0, max_chars - len(suffix))
-    return (text[:keep] + suffix)[:max_chars], True
-
-
-def _serialize_result(result: Any) -> str:
-    try:
-        jsonable = to_jsonable_python(result)
-    except Exception:
-        jsonable = repr(result)
-
-    try:
-        return json.dumps(jsonable, ensure_ascii=True, sort_keys=True, default=str)
-    except TypeError:
-        return repr(result)
-
-
-def _truncate_result(result: Any, max_chars: int) -> tuple[Any, bool]:
-    serialized = _serialize_result(result)
-    try:
-        json_safe = json.loads(serialized)
-    except json.JSONDecodeError:
-        json_safe = serialized
-
-    if max_chars < 0:
-        return json_safe, False
-    if len(serialized) <= max_chars:
-        return json_safe, False
-
-    preview, _ = _truncate(serialized, max_chars)
-    return (
-        {
-            "truncated": True,
-            "message": f"result exceeded {max_chars} characters and was truncated",
-            "preview": preview,
-        },
-        True,
-    )
-
-
-class _BoundedStringIO(io.TextIOBase):
-    """TextIO that stops accepting writes once ``max_chars`` is reached.
-
-    Keeps memory usage bounded during execution rather than truncating
-    the full buffer after the fact.
-    """
-
-    def __init__(self, max_chars: int) -> None:
-        self._buf = io.StringIO()
-        # Negative means unlimited; use a large sentinel so write() logic is unchanged.
-        self._remaining = max_chars if max_chars >= 0 else 10**18
-        self.truncated = False
-
-    def write(self, s: str) -> int:
-        if self._remaining <= 0:
-            self.truncated = True
-            return len(s)
-        if len(s) > self._remaining:
-            self._buf.write(s[: self._remaining])
-            self._remaining = 0
-            self.truncated = True
-        else:
-            self._buf.write(s)
-            self._remaining -= len(s)
-        return len(s)
-
-    def getvalue(self) -> str:
-        val = self._buf.getvalue()
-        return val + "\n[... truncated]" if self.truncated else val
 
 
 def _audit_code(code: str, *, mutations_enabled: bool) -> ast.Module:
@@ -214,82 +122,143 @@ async def _call_tool(tool: Any, ctx: Any, kwargs: dict[str, Any]) -> Any:
     return result
 
 
-def _bind_tool(tool: Any, ctx: Any):
-    async def _bound(**kwargs: Any) -> Any:
-        return await _call_tool(tool, ctx, kwargs)
-
-    _bound.__name__ = tool.name
-    _bound.__doc__ = tool.description
-    return _bound
+# --- Parent-side RPC dispatch -------------------------------------------------
 
 
-def _build_ynab_proxy(mcp: Any, ctx: Any, *, mutations_enabled: bool) -> SimpleNamespace:
-    read = SimpleNamespace()
-    write = SimpleNamespace()
+def _build_dispatch(mcp: Any, *, mutations_enabled: bool) -> dict[tuple[str, str], Any]:
+    """Map ``(namespace, method)`` to the live tool the child may invoke.
+
+    Write tools are omitted entirely when mutations are disabled, so a stray
+    ``ynab.write.*`` RPC fails closed even if it slipped past the AST audit.
+    """
+    dispatch: dict[tuple[str, str], Any] = {}
     for name, tool in mcp._tool_manager._tools.items():
         if name in {"execute", "search"}:
             continue
-        target = write if _is_mutating_tool(tool) else read
-        setattr(target, name, _bind_tool(tool, ctx))
-
-    if not mutations_enabled:
-        write = _DisabledWriteNamespace()
-    return SimpleNamespace(read=read, write=write)
-
-
-class _DisabledWriteNamespace:
-    def __getattr__(self, name: str) -> Any:
-        raise PermissionError(f"mutations_disabled: ynab.write.{name} is not available")
+        if _is_mutating_tool(tool):
+            if mutations_enabled:
+                dispatch[("write", name)] = tool
+        else:
+            dispatch[("read", name)] = tool
+    return dispatch
 
 
-def _wrap_code(code: str) -> str:
-    indented = textwrap.indent(code.strip() or "return None", "    ")
-    return f"async def __main__():\n{indented}\n"
+async def _handle_rpc(
+    frame: dict[str, Any],
+    dispatch: dict[tuple[str, str], Any],
+    ctx: Any,
+) -> dict[str, Any]:
+    call_id = frame.get("id")
+    namespace = frame.get("namespace", "")
+    method = frame.get("method", "")
+    kwargs = frame.get("kwargs", {})
 
-
-async def _run_snippet(
-    code: str,
-    extra_globals: dict[str, Any],
-    *,
-    mutations_enabled: bool,
-    timeout_s: float,
-    max_output_chars: int,
-    filename: str = "<ynab-code-mode>",
-) -> CodeModeResult:
-    logs_buffer = _BoundedStringIO(max_output_chars)
+    tool = dispatch.get((namespace, method))
+    if tool is None:
+        return {
+            "type": "rpc_result",
+            "id": call_id,
+            "ok": False,
+            "error": f"unknown_tool: ynab.{namespace}.{method}",
+        }
     try:
-        wrapped_code = _wrap_code(code)
-        _audit_code(wrapped_code, mutations_enabled=mutations_enabled)
-        sandbox_globals = {"__builtins__": SAFE_BUILTINS, "LIMIT": 100, **extra_globals}
-        compiled = compile(wrapped_code, filename, "exec")
-        exec(compiled, sandbox_globals, sandbox_globals)  # noqa: S102
-        main = sandbox_globals["__main__"]
-        with contextlib.redirect_stdout(logs_buffer):
-            # Soft timeout: cannot interrupt synchronous blocking code. See mcp-ynab-fkv.
-            result = await asyncio.wait_for(main(), timeout=timeout_s)
-        logs = logs_buffer.getvalue()
-        logs_truncated = logs_buffer.truncated
-        result, result_truncated = _truncate_result(result, max_output_chars)
-        return CodeModeResult(
-            ok=True,
-            result=result,
-            logs=logs,
-            truncated=logs_truncated or result_truncated,
-        )
+        result = await _call_tool(tool, ctx, kwargs)
+        return {
+            "type": "rpc_result",
+            "id": call_id,
+            "ok": True,
+            "result": to_jsonable_python(result),
+        }
+    except Exception as exc:  # surface tool errors to the snippet, don't crash the bridge
+        return {
+            "type": "rpc_result",
+            "id": call_id,
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+async def _serve(
+    proc: asyncio.subprocess.Process,
+    dispatch: dict[tuple[str, str], Any],
+    ctx: Any,
+) -> dict[str, Any]:
+    """Pump frames from the child until it emits its final result.
+
+    Dispatches RPC requests concurrently with reading, so the child never blocks
+    on an unanswered call (the deadlock the advisor warned about).
+    """
+    assert proc.stdout is not None and proc.stdin is not None
+    while True:
+        try:
+            frame = await read_frame(proc.stdout)
+        except (RuntimeError, ValueError):
+            # Bad header or malformed JSON payload: treat as a dead worker and
+            # fail closed rather than letting the exception escape run_code.
+            frame = None
+        if frame is None:
+            stderr = b""
+            if proc.stderr is not None:
+                stderr = await proc.stderr.read()
+            detail = stderr.decode(errors="replace").strip()[-2000:] or "no output"
+            return {
+                "ok": False,
+                "result": None,
+                "logs": "",
+                "error": f"worker_failed: {detail}",
+                "traceback": None,
+                "truncated": False,
+            }
+        if frame.get("type") == "rpc":
+            response = await _handle_rpc(frame, dispatch, ctx)
+            proc.stdin.write(encode_frame(response))
+            await proc.stdin.drain()
+        elif frame.get("type") == "result":
+            return frame
+
+
+_RESULT_FIELDS = ("ok", "result", "logs", "error", "traceback", "truncated")
+
+
+async def _run_in_subprocess(
+    startup: dict[str, Any],
+    *,
+    dispatch: dict[tuple[str, str], Any],
+    ctx: Any,
+    timeout_s: float,
+) -> CodeModeResult:
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        _WORKER_PATH,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    proc.stdin.write(encode_frame(startup))
+    await proc.stdin.drain()
+
+    try:
+        frame = await asyncio.wait_for(_serve(proc, dispatch, ctx), timeout=timeout_s)
+        # The child emits its result frame as its last act, then exits. Close its
+        # stdin and give it a brief grace period to wind down on its own.
+        if proc.stdin is not None and not proc.stdin.is_closing():
+            proc.stdin.close()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
     except asyncio.TimeoutError:
-        logs, truncated = _truncate(logs_buffer.getvalue(), max_output_chars)
-        return CodeModeResult(ok=False, logs=logs, error="timeout", truncated=truncated)
-    except CodeModeAuditError as exc:
-        return CodeModeResult(ok=False, error=str(exc))
-    except Exception as exc:
-        logs, truncated = _truncate(logs_buffer.getvalue(), max_output_chars)
-        return CodeModeResult(
-            ok=False,
-            logs=logs,
-            error=f"{type(exc).__name__}: {exc}",
-            traceback=traceback_module.format_exc(),
-            truncated=truncated,
-        )
+        # _serve exceeded the wall clock: hard-kill non-cooperative user code.
+        return CodeModeResult(ok=False, error="timeout")
+    finally:
+        # Backstop: never leave a child running (covers timeout, cancellation,
+        # and a child that ignored the stdin EOF).
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+    return CodeModeResult(**{key: frame.get(key) for key in _RESULT_FIELDS})
 
 
 async def run_code(
@@ -301,14 +270,23 @@ async def run_code(
     timeout_s: float = 10.0,
     max_output_chars: int = 8192,
 ) -> CodeModeResult:
-    """Audit and execute ``code`` as the body of an async ``__main__`` function."""
-    return await _run_snippet(
-        code,
-        {"ynab": _build_ynab_proxy(mcp, ctx, mutations_enabled=mutations_enabled)},
-        mutations_enabled=mutations_enabled,
-        timeout_s=timeout_s,
-        max_output_chars=max_output_chars,
-    )
+    """Audit and execute ``code`` as the body of an async ``__main__`` in a child process."""
+    try:
+        _audit_code(wrap_code(code), mutations_enabled=mutations_enabled)
+    except CodeModeAuditError as exc:
+        return CodeModeResult(ok=False, error=str(exc))
+
+    dispatch = _build_dispatch(mcp, mutations_enabled=mutations_enabled)
+    startup = {
+        "mode": "code",
+        "code": code,
+        "mutations_enabled": mutations_enabled,
+        "max_output_chars": max_output_chars,
+        "read": [method for (ns, method) in dispatch if ns == "read"],
+        "write": [method for (ns, method) in dispatch if ns == "write"],
+        "filename": "<ynab-code-mode>",
+    }
+    return await _run_in_subprocess(startup, dispatch=dispatch, ctx=ctx, timeout_s=timeout_s)
 
 
 async def run_search(
@@ -319,11 +297,18 @@ async def run_search(
     max_output_chars: int = 8192,
 ) -> CodeModeResult:
     """Audit and execute ``code`` against a spec catalog (no live YNAB API access)."""
-    return await _run_snippet(
-        code,
-        {"spec": spec},
-        mutations_enabled=True,  # no ynab namespace; mutation check is irrelevant
-        timeout_s=timeout_s,
-        max_output_chars=max_output_chars,
-        filename="<ynab-search>",
-    )
+    try:
+        # No ynab namespace here, so the mutation check is irrelevant.
+        _audit_code(wrap_code(code), mutations_enabled=True)
+    except CodeModeAuditError as exc:
+        return CodeModeResult(ok=False, error=str(exc))
+
+    startup = {
+        "mode": "search",
+        "code": code,
+        "mutations_enabled": True,
+        "max_output_chars": max_output_chars,
+        "spec": spec,
+        "filename": "<ynab-search>",
+    }
+    return await _run_in_subprocess(startup, dispatch={}, ctx=None, timeout_s=timeout_s)

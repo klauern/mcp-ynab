@@ -60,3 +60,5 @@ sync-branch: "beads-sync"
 # - linear.api-key
 # - github.org
 # - github.repo
+
+sync.remote: "git+https://github.com/klauern/mcp-ynab.git"

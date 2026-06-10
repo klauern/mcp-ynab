@@ -85,13 +85,6 @@ jobs:
         if: steps.release-level.outputs.should_release == 'true'
         run: uv build
 
-      - name: Upload distributions
-        if: steps.release-level.outputs.should_release == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: release-distributions
-          path: dist/
-
       - name: Push version commit and tag
         if: steps.release-level.outputs.should_release == 'true'
         env:
@@ -110,21 +103,3 @@ jobs:
           gh release create "${{ steps.bump.outputs.tag }}" dist/* \
             --title "${{ steps.bump.outputs.tag }}" \
             --generate-notes
-
-  publish:
-    name: Publish to PyPI
-    needs: release
-    if: needs.release.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Download distributions
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: release-distributions
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b

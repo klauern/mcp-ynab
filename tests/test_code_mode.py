@@ -145,6 +145,52 @@ async def test_run_code_truncates_large_result() -> None:
     assert len(result.result["preview"]) == 80
 
 
+@pytest.mark.asyncio
+async def test_run_code_handles_large_rpc_payload() -> None:
+    """A tool result larger than the OS pipe buffer round-trips without deadlock.
+
+    The parent writes the full RPC response (here ~200KB) to the child's stdin;
+    the child must be draining it. Guards the framing/deadlock failure mode.
+    """
+    big = "x" * 200_000
+
+    async def get_big() -> str:
+        return big
+
+    mcp = SimpleNamespace(
+        _tool_manager=SimpleNamespace(
+            _tools={"get_big": _tool("get_big", get_big, EmptyArgs, read_only=True)}
+        )
+    )
+    result = await run_code(
+        "data = await ynab.read.get_big()\nreturn len(data)",
+        mcp=mcp,
+        timeout_s=10.0,
+    )
+    assert result.ok is True, result.error
+    assert result.result == 200_000
+
+
+@pytest.mark.asyncio
+async def test_run_code_hard_kills_synchronous_blocking_code() -> None:
+    """mcp-ynab-fkv: a synchronous, non-cooperative loop is killed at the timeout.
+
+    The body never ``await``s, so the old in-process ``asyncio.wait_for`` could
+    not interrupt it -- the event loop never regained control. The subprocess
+    runner hard-kills the child, so the call returns promptly with a timeout.
+    """
+    import time
+
+    start = time.monotonic()
+    result = await run_code("while True:\n    x = 1\nreturn None", mcp=_mcp(), timeout_s=0.2)
+    elapsed = time.monotonic() - start
+
+    assert result.ok is False
+    assert result.error == "timeout"
+    # Killed at ~timeout (plus spawn overhead), not left to run unbounded.
+    assert elapsed < 5.0
+
+
 def test_generate_stubs_splits_read_and_write_namespaces() -> None:
     stubs = generate_stubs(_mcp())
     assert "class ReadNamespace" in stubs
@@ -217,6 +263,29 @@ async def test_execute_requires_preference_enabled(
 
     assert result["ok"] is False
     assert result["error"] == "code_mode_disabled"
+
+
+@pytest.mark.asyncio
+async def test_execute_end_to_end_spawns_real_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drive the real server.execute -> real mcp registry -> real worker process.
+
+    Unlike the other execute tests this does NOT mock run_code: it exercises
+    _build_dispatch over the real tool set, startup-frame encoding, and a real
+    subprocess in the live event loop. The snippet makes no tool call, so no
+    YNAB API key or network access is needed.
+    """
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_enabled=True)),
+    )
+
+    result = await server.execute("return 1 + 1")
+
+    assert result["ok"] is True, result
+    assert result["result"] == 2
 
 
 @pytest.mark.asyncio

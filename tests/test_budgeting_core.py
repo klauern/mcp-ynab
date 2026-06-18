@@ -368,12 +368,79 @@ async def test_update_category_move_group(
     cat = _category_mock("c-1", "Groceries")
     mock_ynab_apis.categories.update_category.return_value = _resp(category=cat)
 
-    result = await server.update_category("budget-1", "c-1", category_group_id="group-2")
+    group_id = "22222222-2222-2222-2222-222222222222"
+    result = await server.update_category("budget-1", "c-1", category_group_id=group_id)
 
     assert "moved to group" in result
     args = mock_ynab_apis.categories.update_category.call_args
     _, _, wrapper = args.args
-    assert wrapper.category.category_group_id == "group-2"
+    # SDK parses category_group_id into a uuid.UUID, so compare by string value.
+    assert str(wrapper.category.category_group_id) == group_id
+
+
+@pytest.mark.asyncio
+async def test_update_category_sets_goal_target_in_milliunits(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    cat = _category_mock("c-1", "Vacation")
+    mock_ynab_apis.categories.update_category.return_value = _resp(category=cat)
+
+    result = await server.update_category("budget-1", "c-1", goal_target=150.0)
+
+    assert "goal target set to $150.00" in result
+    _, _, wrapper = mock_ynab_apis.categories.update_category.call_args.args
+    # Dollars are converted to YNAB milliunits (x1000).
+    assert wrapper.category.goal_target == 150_000
+
+
+@pytest.mark.asyncio
+async def test_update_category_sets_goal_target_date(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    cat = _category_mock("c-1", "Vacation")
+    mock_ynab_apis.categories.update_category.return_value = _resp(category=cat)
+
+    result = await server.update_category("budget-1", "c-1", goal_target_date="2026-07-01")
+
+    assert "goal target date set to `2026-07-01`" in result
+    _, _, wrapper = mock_ynab_apis.categories.update_category.call_args.args
+    # SDK coerces the ISO string into a datetime.date.
+    assert wrapper.category.goal_target_date == date(2026, 7, 1)
+
+
+@pytest.mark.asyncio
+async def test_update_category_sets_goal_needs_whole_amount(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    cat = _category_mock("c-1", "Vacation")
+    mock_ynab_apis.categories.update_category.return_value = _resp(category=cat)
+
+    result = await server.update_category("budget-1", "c-1", goal_needs_whole_amount=True)
+
+    assert "goal mode set to Set Aside" in result
+    _, _, wrapper = mock_ynab_apis.categories.update_category.call_args.args
+    assert wrapper.category.goal_needs_whole_amount is True
+
+    # False selects the "Refill" mode.
+    result = await server.update_category("budget-1", "c-1", goal_needs_whole_amount=False)
+    assert "goal mode set to Refill" in result
+
+
+@pytest.mark.asyncio
+async def test_update_category_omits_unset_fields_from_payload(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    """Only-provided fields reach the wire; omitted fields must not clear data."""
+    cat = _category_mock("c-1", "Vacation")
+    mock_ynab_apis.categories.update_category.return_value = _resp(category=cat)
+
+    await server.update_category("budget-1", "c-1", goal_target=25.0)
+
+    _, _, wrapper = mock_ynab_apis.categories.update_category.call_args.args
+    # ExistingCategory serializes with exclude_none, so name/note/group and the
+    # other goal fields are absent from the payload — YNAB leaves them untouched.
+    payload = wrapper.category.to_dict()
+    assert payload == {"goal_target": 25_000}
 
 
 @pytest.mark.asyncio

@@ -83,9 +83,9 @@ def _currency_iso(currency_format: object) -> str:
 async def list_budgets_resource() -> list[types.TextContent]:
     """List all (non-closed/non-deleted) budgets as a markdown table."""
     async with await _s.get_ynab_client() as client:
-        budgets_api = _s.BudgetsApi(client)
-        response = budgets_api.get_budgets()
-        budgets = response.data.budgets or []
+        plans_api = _s.PlansApi(client)
+        response = plans_api.get_plans()
+        budgets = response.data.plans or []
 
         active = [
             b

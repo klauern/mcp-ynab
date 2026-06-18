@@ -46,13 +46,13 @@ def mock_ynab_apis(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
     Returns a SimpleNamespace with `budgets`, `accounts`, `categories`, and
     `transactions` MagicMock instances. Tests configure return values on these
-    mocks (e.g. `mock_ynab_apis.budgets.get_budgets.return_value = ...`) and
+    mocks (e.g. `mock_ynab_apis.budgets.get_plans.return_value = ...`) and
     then call the tool function under test directly.
     """
     from mcp_ynab import server
 
     apis = SimpleNamespace(
-        budgets=MagicMock(name="BudgetsApi"),
+        budgets=MagicMock(name="PlansApi"),
         accounts=MagicMock(name="AccountsApi"),
         categories=MagicMock(name="CategoriesApi"),
         transactions=MagicMock(name="TransactionsApi"),
@@ -73,7 +73,7 @@ def mock_ynab_apis(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         return _DummyClientCtx()
 
     monkeypatch.setattr(server, "get_ynab_client", _fake_get_ynab_client)
-    monkeypatch.setattr(server, "BudgetsApi", lambda client: apis.budgets)
+    monkeypatch.setattr(server, "PlansApi", lambda client: apis.budgets)
     monkeypatch.setattr(server, "AccountsApi", lambda client: apis.accounts)
     monkeypatch.setattr(server, "CategoriesApi", lambda client: apis.categories)
     monkeypatch.setattr(server, "TransactionsApi", lambda client: apis.transactions)

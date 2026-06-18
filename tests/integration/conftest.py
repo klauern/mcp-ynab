@@ -28,13 +28,13 @@ def _require_api_key() -> None:
 def integration_first_budget_id() -> str:
     """Discover the first budget id on the account; cache for the session."""
     _require_api_key()
-    from ynab.api.budgets_api import BudgetsApi
+    from ynab.api.plans_api import PlansApi
     from ynab.api_client import ApiClient
     from ynab.configuration import Configuration
 
     config = Configuration(access_token=os.environ["YNAB_API_KEY"])
     with ApiClient(config) as client:
-        budgets = BudgetsApi(client).get_budgets().data.budgets
+        budgets = PlansApi(client).get_plans().data.plans
         if not budgets:
             pytest.skip("YNAB account has no budgets")
         return budgets[0].id

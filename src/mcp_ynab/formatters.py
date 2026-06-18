@@ -148,7 +148,7 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _process_category_data(category: Category | Dict[str, Any]) -> tuple[str, str, float, float]:
     """Process category data and return tuple of (id, name, budgeted, activity)."""
     if isinstance(category, Category):
-        return category.id, category.name, category.budgeted, category.activity
+        return str(category.id), category.name, category.budgeted, category.activity
     cat_dict = cast(Dict[str, Any], category)
     return cat_dict["id"], cat_dict["name"], cat_dict["budgeted"], cat_dict["activity"]
 

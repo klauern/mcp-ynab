@@ -2,7 +2,7 @@
 
 The `mcp` FastMCP instance lives here, along with the shared tool-annotation
 constants and the singleton `ynab_resources` store. Module-level imports of
-the YNAB SDK API classes (`BudgetsApi`, `AccountsApi`, `CategoriesApi`,
+the YNAB SDK API classes (`PlansApi`, `AccountsApi`, `CategoriesApi`,
 `TransactionsApi`, `ExistingTransaction`, `PutTransactionWrapper`) are kept
 at this scope so tests can patch them via
 `monkeypatch.setattr(server, "<Name>", ...)`; tool modules access these names
@@ -29,7 +29,7 @@ from ynab.api_client import ApiClient
 # `monkeypatch.setattr(server, "<Name>", ...)`. Tool modules access them as
 # `server.<Name>` so those patches propagate via late attribute lookup.
 from ynab.api.accounts_api import AccountsApi  # noqa: F401
-from ynab.api.budgets_api import BudgetsApi  # noqa: F401
+from ynab.api.plans_api import PlansApi  # noqa: F401
 from ynab.api.categories_api import CategoriesApi  # noqa: F401
 from ynab.api.months_api import MonthsApi  # noqa: F401
 from ynab.api.payees_api import PayeesApi  # noqa: F401
@@ -107,12 +107,12 @@ async def _resolve_budget_id(client: ApiClient, ctx: Optional[Context]) -> str:
     if budget_id:
         return budget_id
 
-    budgets_api = BudgetsApi(client)
-    budgets = budgets_api.get_budgets().data.budgets
+    plans_api = PlansApi(client)
+    budgets = plans_api.get_plans().data.plans
     if not budgets:
         raise ValueError("No YNAB budgets available on this account.")
     if len(budgets) == 1:
-        return budgets[0].id
+        return str(budgets[0].id)
 
     if ctx is None:
         raise ValueError(
@@ -133,9 +133,10 @@ async def _resolve_budget_id(client: ApiClient, ctx: Optional[Context]) -> str:
                 f"Selected budget index {choice.index} out of range 1..{len(budgets)}."
             )
         chosen = budgets[choice.index - 1]
+        chosen_id = str(chosen.id)
         if choice.set_as_preferred:
-            ynab_resources.set_preferred_budget_id(chosen.id)
-        return chosen.id
+            ynab_resources.set_preferred_budget_id(chosen_id)
+        return chosen_id
     if result.action == "decline":
         raise ValueError("Budget selection declined; cannot proceed.")
     raise ValueError("Budget selection cancelled; cannot proceed.")

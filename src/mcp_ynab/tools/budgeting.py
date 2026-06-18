@@ -1,8 +1,8 @@
 """Budget, account, and category MCP tools.
 
-Tool bodies look up YNAB SDK API classes (`BudgetsApi`, `AccountsApi`,
+Tool bodies look up YNAB SDK API classes (`PlansApi`, `AccountsApi`,
 `CategoriesApi`) and `ynab_resources` via the `server` module so that
-`monkeypatch.setattr(server, "BudgetsApi", ...)` in tests propagates here
+`monkeypatch.setattr(server, "PlansApi", ...)` in tests propagates here
 through late attribute lookup. Pure formatting helpers are imported from
 `mcp_ynab.formatters` since tests do not patch them.
 """
@@ -16,7 +16,7 @@ from ynab.models.category_group_with_categories import CategoryGroupWithCategori
 from ynab.models.patch_category_wrapper import PatchCategoryWrapper
 from ynab.models.patch_payee_wrapper import PatchPayeeWrapper
 from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
-from ynab.models.save_category import SaveCategory
+from ynab.models.existing_category import ExistingCategory
 from ynab.models.save_payee import SavePayee
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 
@@ -57,9 +57,9 @@ async def get_account_balance(account_id: str, ctx: Optional[Context] = None) ->
 async def get_budgets() -> str:
     """List all YNAB budgets in Markdown format."""
     async with await _s.get_ynab_client() as client:
-        budgets_api = _s.BudgetsApi(client)
-        budgets_response = budgets_api.get_budgets()
-        budgets_list = budgets_response.data.budgets
+        plans_api = _s.PlansApi(client)
+        budgets_response = plans_api.get_plans()
+        budgets_list = budgets_response.data.plans
 
         markdown = "# YNAB Budgets\n\n"
         if not budgets_list:
@@ -361,15 +361,21 @@ async def update_category(
     name: Optional[str] = None,
     note: Optional[str] = None,
     category_group_id: Optional[str] = None,
+    goal_target: Optional[float] = None,
+    goal_target_date: Optional[str] = None,
+    goal_needs_whole_amount: Optional[bool] = None,
 ) -> str:
-    """Rename a category, update its note, or move it to a different category group.
+    """Rename a category, edit its note/group, or set its recurring monthly goal.
 
-    At least one of `name`, `note`, or `category_group_id` must be provided.
-    Idempotent: applying the same values twice leaves the category unchanged.
+    At least one updatable field must be provided. Idempotent: applying the
+    same values twice leaves the category unchanged.
 
-    Note: YNAB API v1 does not support setting goals via API. Goal fields
-    (goal_type, goal_target, etc.) appear on the read model but the write
-    model (SaveCategory) only accepts name, note, and category_group_id.
+    The `goal_*` fields map onto YNAB's category PATCH endpoint, which now
+    accepts them (this was previously an API limitation). Setting `goal_target`
+    on a category that has no goal creates a monthly NEED goal by default; it
+    only applies to goal types with a target amount (NEED/TB/TBD/MF). This is
+    distinct from `assign_money`, which sets the per-month *assigned* amount —
+    here we change the recurring *target*.
 
     Args:
         budget_id: The YNAB budget ID.
@@ -377,11 +383,37 @@ async def update_category(
         name: New display name for the category (optional).
         note: New note/memo for the category (optional).
         category_group_id: ID of the category group to move the category into (optional).
+        goal_target: Goal target in dollars (converted to milliunits). Creates a
+            monthly NEED goal when the category has no goal yet.
+        goal_target_date: Goal target date as an ISO date string (e.g. "2026-07-01").
+        goal_needs_whole_amount: NEED goals only — True selects "Set Aside" (the
+            whole amount each period), False selects "Refill" (up to the target).
     """
-    if name is None and note is None and category_group_id is None:
-        raise ValueError("At least one of name, note, or category_group_id must be provided.")
+    if (
+        name is None
+        and note is None
+        and category_group_id is None
+        and goal_target is None
+        and goal_target_date is None
+        and goal_needs_whole_amount is None
+    ):
+        raise ValueError(
+            "At least one of name, note, category_group_id, goal_target, "
+            "goal_target_date, or goal_needs_whole_amount must be provided."
+        )
+    goal_target_milliunits = int(round(goal_target * 1000)) if goal_target is not None else None
+    parsed_goal_date = date.fromisoformat(goal_target_date) if goal_target_date else None
+    # ExistingCategory serializes with exclude_none, so only the fields set here
+    # reach the wire; omitted fields are left untouched by YNAB's PATCH.
     wrapper = PatchCategoryWrapper(
-        category=SaveCategory(name=name, note=note, category_group_id=category_group_id)
+        category=ExistingCategory(
+            name=name,
+            note=note,
+            category_group_id=category_group_id,
+            goal_target=goal_target_milliunits,
+            goal_target_date=parsed_goal_date,
+            goal_needs_whole_amount=goal_needs_whole_amount,
+        )
     )
     async with await _s.get_ynab_client() as client:
         cats = _s.CategoriesApi(client)
@@ -394,6 +426,12 @@ async def update_category(
         parts.append(f"note set to `{cat.note}`")
     if category_group_id is not None:
         parts.append(f"moved to group `{category_group_id}`")
+    if goal_target is not None:
+        parts.append(f"goal target set to ${goal_target:,.2f}")
+    if parsed_goal_date is not None:
+        parts.append(f"goal target date set to `{parsed_goal_date.isoformat()}`")
+    if goal_needs_whole_amount is not None:
+        parts.append(f"goal mode set to {'Set Aside' if goal_needs_whole_amount else 'Refill'}")
     return f"Category `{category_id}` updated: {', '.join(parts)}."
 
 

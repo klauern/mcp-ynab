@@ -3,7 +3,7 @@
 import os
 
 import pytest
-from ynab.api.budgets_api import BudgetsApi
+from ynab.api.plans_api import PlansApi
 
 
 @pytest.mark.integration
@@ -19,10 +19,10 @@ def test_environment_variables():
 @pytest.mark.integration
 def test_ynab_api_connection(ynab_client):
     """Test that we can connect to the YNAB API."""
-    budgets_api = BudgetsApi(ynab_client)
-    budgets_response = budgets_api.get_budgets()
-    assert budgets_response.data.budgets is not None
-    assert len(budgets_response.data.budgets) > 0
+    plans_api = PlansApi(ynab_client)
+    budgets_response = plans_api.get_plans()
+    assert budgets_response.data.plans is not None
+    assert len(budgets_response.data.plans) > 0
 
 
 def test_preferences_files_exist():

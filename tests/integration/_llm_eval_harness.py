@@ -28,6 +28,21 @@ from typing import Any
 DEFAULT_EVAL_MODEL = "claude-sonnet-4-6"
 DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001"
 
+# Orient the model to the Code Mode surface so the eval measures whether the
+# tools work — not whether the model can rediscover the Code Mode convention
+# cold. Mirrors what the ynab://code-mode/examples + stubs resources convey.
+CODE_MODE_SYSTEM = (
+    "You operate a YNAB budget through a Code Mode interface exposed as two tools:\n"
+    "- `search`: find available YNAB operations when you're unsure what exists.\n"
+    "- `execute`: run a Python snippet. The snippet is the body of an async function "
+    "with a `ynab` object in scope. Call read operations as "
+    "`await ynab.read.<operation>(...)` and `return` the value you want back.\n\n"
+    "Resolve ids (budget, category, account) by reading them rather than guessing. "
+    "The environment is read-only: `ynab.write.*` is unavailable, so for any change "
+    "request, gather the relevant data and describe what you would do — do not attempt "
+    "to apply it. When done, give the user a clear final answer in plain language."
+)
+
 # YNAB-mutating tools. Dry-run/read evals must never call these — the structural
 # gate in test_llm_evals.py enforces it so a "dry run" prompt can't quietly
 # change the live budget. Local-state tools (cache_*, set_preferred_budget_id,
@@ -157,6 +172,7 @@ async def drive_prompt(prompt: str, *, model: str, max_iterations: int = 8) -> E
                 response = await client.messages.create(
                     model=model,
                     max_tokens=2048,
+                    system=CODE_MODE_SYSTEM,
                     tools=anthropic_tools,
                     messages=messages,
                 )

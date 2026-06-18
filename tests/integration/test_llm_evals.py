@@ -80,6 +80,19 @@ async def test_eval_case(case: dict) -> None:
     illegal_writes = [t for t in run.tool_names if t in YNAB_WRITE_TOOLS]
     assert not illegal_writes, f"eval performed disallowed YNAB write(s): {illegal_writes}"
 
+    # Structural wrong-tool-path check (read tasks only). In Code Mode the YNAB
+    # call lives in the Python passed to `execute`, so inspect that code rather
+    # than the tool name. Any one of the listed read ops is acceptable. Mutation
+    # tasks can't be checked this way — the write ops are hidden in read-only
+    # Code Mode — so the LLM judge carries those.
+    expected_refs = case.get("expected_code_refs") or []
+    if expected_refs:
+        executed_code = "\n".join(str(tc.arguments.get("code", "")) for tc in run.tool_calls)
+        assert any(ref in executed_code for ref in expected_refs), (
+            f"expected the executed code to call one of {expected_refs}; "
+            f"executed code was:\n{executed_code[:800]}"
+        )
+
     passed, reason = await judge_answer(
         case["prompt"], case["expected_output"], run.final_text, model=judge_model
     )

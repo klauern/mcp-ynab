@@ -1,6 +1,6 @@
 {
   "skill_name": "mcp-ynab",
-  "description": "LLM-driven evals. Each prompt is given to Claude with the mcp-ynab tools over the real MCP stdio transport. The server runs in Code Mode (its default/target surface): the public tools are `search` + `execute`, and YNAB helpers are reached as `ynab.read.*` / `ynab.write.*` Python inside `execute`. Evals run read-only: code_mode_mutations_enabled defaults to False, so `ynab.write.*` is blocked server-side and hidden from the spec. `read` tasks fetch and report data; `mutation` tasks are dry runs — the model reads the relevant data and describes the change it would make without applying it. See tests/integration/test_llm_evals.py.",
+  "description": "LLM-driven evals. Each prompt is given to Claude with the mcp-ynab tools over the real MCP stdio transport. The server runs in Code Mode (its default/target surface): the public tools are `search` + `execute`, and YNAB helpers are reached as `ynab.read.*` / `ynab.write.*` Python inside `execute`. Evals run read-only: code_mode_mutations_enabled defaults to False, so `ynab.write.*` is blocked server-side and hidden from the spec. `read` tasks fetch and report data; `mutation` tasks are dry runs — the model reads the relevant data and describes the change it would make without applying it. `expected_code_refs` (read tasks) lists read operations whose presence in the executed Python is an acceptable structural signal; the test passes if ANY appears. See tests/integration/test_llm_evals.py.",
   "evals": [
     {
       "id": 1,
@@ -8,6 +8,12 @@
       "prompt": "How much did I spend on dining last month?",
       "expected_output": "Reports the total dining or restaurant category activity for last month, with enough context to identify the budget, category, month, and dollar amount used.",
       "category": "read",
+      "expected_code_refs": [
+        "spending_by_category",
+        "get_transactions",
+        "get_categories",
+        "get_category_for_month"
+      ],
       "expectations": []
     },
     {
@@ -16,6 +22,10 @@
       "prompt": "Show me the uncategorized transactions that still need cleanup.",
       "expected_output": "Lists uncategorized transactions needing attention, including dates, payees, amounts, ids, and whether each transaction is approved.",
       "category": "read",
+      "expected_code_refs": [
+        "get_transactions_needing_attention",
+        "get_transactions"
+      ],
       "expectations": []
     },
     {
@@ -24,6 +34,11 @@
       "prompt": "Which categories are over budget this month?",
       "expected_output": "Identifies categories with negative current-month balances or overspending, grouped or summarized clearly with category names and dollar amounts.",
       "category": "read",
+      "expected_code_refs": [
+        "get_categories",
+        "get_category_for_month",
+        "get_month"
+      ],
       "expectations": []
     },
     {
@@ -32,6 +47,10 @@
       "prompt": "What's my current cash balance across accounts?",
       "expected_output": "Summarizes current cash or on-budget account balances and gives a total in dollars, excluding closed or deleted accounts when account status is available.",
       "category": "read",
+      "expected_code_refs": [
+        "get_accounts",
+        "get_account_balance"
+      ],
       "expectations": []
     },
     {
@@ -40,6 +59,9 @@
       "prompt": "What are my largest transactions from the last 30 days?",
       "expected_output": "Returns the largest recent transactions with date, payee, category when available, amount, and transaction id so the user can inspect unusual spending.",
       "category": "read",
+      "expected_code_refs": [
+        "get_transactions"
+      ],
       "expectations": []
     },
     {

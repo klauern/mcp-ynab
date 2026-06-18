@@ -64,20 +64,21 @@ async def test_eval_case(case: dict) -> None:
         f"tool loop hit max iterations without finishing; tools called={run.tool_names}"
     )
 
-    # Read-only + dry-run scope: no eval may perform a real YNAB write.
+    # The server runs in Code Mode (its default and target surface): the public
+    # tools are `search` + `execute`, and the YNAB helpers are reached as Python
+    # `ynab.read.*` / `ynab.write.*` inside `execute`. The model must actually
+    # engage that surface rather than answer from prior knowledge.
+    assert run.tool_names, f"eval engaged no tools; answer={run.final_text!r}"
+
+    # Read-only + dry-run scope. Two layers keep this safe against a live budget:
+    #   1. Server-enforced (primary): code_mode_mutations_enabled defaults to
+    #      False, so `ynab.write.*` is blocked by the runner (AST audit + dispatch
+    #      fail-closed) and hidden from the Code Mode spec.
+    #   2. Defensive (this assert): if someone disabled Code Mode tool replacement
+    #      (the escape hatch), the legacy direct write tools become callable — none
+    #      should ever be invoked under the eval config.
     illegal_writes = [t for t in run.tool_names if t in YNAB_WRITE_TOOLS]
     assert not illegal_writes, f"eval performed disallowed YNAB write(s): {illegal_writes}"
-
-    if case.get("category") == "read":
-        # A read task must actually consult YNAB rather than answer from prior knowledge.
-        assert run.tool_names, f"read eval made no tool calls; answer={run.final_text!r}"
-    elif case.get("category") == "mutation":
-        # Dry-run prompts must not reach a write via the code-mode `execute` sandbox,
-        # which would bypass the write-tool gate above.
-        assert "execute" not in run.tool_names, (
-            "dry-run eval used the code-mode `execute` tool, which can perform live "
-            f"mutations and bypasses the write gate; tools={run.tool_names}"
-        )
 
     passed, reason = await judge_answer(
         case["prompt"], case["expected_output"], run.final_text, model=judge_model

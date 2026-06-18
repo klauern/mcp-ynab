@@ -1,6 +1,6 @@
 {
   "skill_name": "mcp-ynab",
-  "description": "LLM-driven evals. Each prompt is given to Claude with the mcp-ynab tools over the real MCP stdio transport. Scope is read-only + dry-run: no eval should perform a real YNAB write. See tests/integration/test_llm_evals.py.",
+  "description": "LLM-driven evals. Each prompt is given to Claude with the mcp-ynab tools over the real MCP stdio transport. The server runs in Code Mode (its default/target surface): the public tools are `search` + `execute`, and YNAB helpers are reached as `ynab.read.*` / `ynab.write.*` Python inside `execute`. Evals run read-only: code_mode_mutations_enabled defaults to False, so `ynab.write.*` is blocked server-side and hidden from the spec. `read` tasks fetch and report data; `mutation` tasks are dry runs — the model reads the relevant data and describes the change it would make without applying it. See tests/integration/test_llm_evals.py.",
   "evals": [
     {
       "id": 1,
@@ -46,7 +46,7 @@
       "id": 6,
       "name": "Dry Run Grocery Categorization",
       "prompt": "Categorize the five most recent uncategorized transactions as Groceries, but don't actually change anything.",
-      "expected_output": "Plans a dry-run bulk PATCH using SaveTransactionWithIdOrImportId entries for five transaction ids with the resolved Groceries category id, without performing a real write.",
+      "expected_output": "Identifies up to five recent uncategorized transactions (with dates/payees/amounts/ids) and clearly lays out the Groceries categorization it would apply to each, without performing a real write.",
       "category": "mutation",
       "expectations": []
     },
@@ -54,7 +54,7 @@
       "id": 7,
       "name": "Dry Run Approve Last Week",
       "prompt": "Approve every unapproved transaction from last week, but only show me what you would update.",
-      "expected_output": "Plans a dry-run bulk PATCH where each selected transaction payload contains its id and approved=true, and does not submit the mutation.",
+      "expected_output": "Identifies last week's unapproved transactions and states that it would mark each approved, listing the affected transactions, without submitting any change.",
       "category": "mutation",
       "expectations": []
     },
@@ -62,15 +62,15 @@
       "id": 8,
       "name": "Dry Run Move Dining Money",
       "prompt": "Move $50 from Dining Out to Groceries for this month as a dry run.",
-      "expected_output": "Describes the intended month-category updates needed to reduce Dining Out by $50 and increase Groceries by $50, including resolved category ids and final budgeted amounts when available, without applying the changes.",
+      "expected_output": "Explains the intended move of $50 from Dining Out to Groceries for the current month, including the resulting budgeted amounts when available, without applying the change.",
       "category": "mutation",
       "expectations": []
     },
     {
       "id": 9,
       "name": "Dry Run Set Category Goal Target",
-      "prompt": "Without changing anything yet, tell me exactly which tool and arguments you would use to set the monthly goal target for my Groceries category to $200.",
-      "expected_output": "Identifies the update_category tool with a goal_target argument of 200 dollars (the server converts dollars to milliunits) for the resolved Groceries category, and explicitly does not apply the change.",
+      "prompt": "Without changing anything yet, walk me through how you would set the monthly goal target for my Groceries category to $200.",
+      "expected_output": "Identifies the Groceries category from the budget and explains setting a recurring monthly target of $200 for it, without applying the change. A clear, correct plan is sufficient; the server is read-only so the write is not performed.",
       "category": "mutation",
       "expectations": []
     }

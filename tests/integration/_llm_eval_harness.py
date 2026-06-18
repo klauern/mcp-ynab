@@ -327,13 +327,19 @@ async def _drive_via_agent_sdk(prompt: str, *, model: str) -> EvalRun:
         async for message in client.receive_response():
             if not isinstance(message, AssistantMessage):
                 continue
+            message_text: list[str] = []
             for block in message.content:
                 if isinstance(block, ToolUseBlock):
                     run.tool_calls.append(
                         ToolCall(_normalize_tool_name(block.name), dict(block.input or {}))
                     )
-                elif isinstance(block, TextBlock) and block.text and block.text.strip():
-                    run.final_text = block.text  # last non-empty assistant text wins
+                elif isinstance(block, TextBlock) and block.text:
+                    message_text.append(block.text)
+            joined = "".join(message_text).strip()
+            if joined:
+                # Full text of the latest assistant message wins (don't truncate
+                # a multi-block answer to its last fragment).
+                run.final_text = joined
     return run
 
 

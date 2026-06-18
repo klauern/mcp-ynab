@@ -41,7 +41,7 @@ tasks:
       - uv run pytest
 
   test:eval:
-    desc: "Run LLM-driven evals (needs ANTHROPIC_API_KEY + YNAB_API_KEY; costs API tokens)"
+    desc: "Run LLM-driven evals (needs YNAB_API_KEY; messages-api also needs ANTHROPIC_API_KEY and costs API tokens; agent-sdk uses your Claude subscription)"
     cmds:
       - uv run pytest -m "eval"
 

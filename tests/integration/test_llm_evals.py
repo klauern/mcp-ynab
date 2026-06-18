@@ -1,7 +1,9 @@
 """LLM-driven evals: Claude uses the live mcp-ynab tools to satisfy prompts.
 
-Marked ``integration`` + ``eval`` (excluded from the default run). Requires
-``ANTHROPIC_API_KEY`` and ``YNAB_API_KEY``; these cost API tokens and run
+Marked ``integration`` + ``eval`` (excluded from the default run). Always needs
+``YNAB_API_KEY``; the ``messages-api`` driver additionally needs an Anthropic
+key (``EVAL_ANTHROPIC_API_KEY`` or ``ANTHROPIC_API_KEY``) and costs API tokens,
+while the ``agent-sdk`` driver authenticates via your Claude subscription. Runs
 against whatever budget the YNAB key points at. Scope is read-only + dry-run —
 the structural gate below fails the test if any eval performs a real YNAB
 write, so it is safe to run against a live budget.
@@ -9,6 +11,7 @@ write, so it is safe to run against a live budget.
 Run with::
 
     YNAB_API_KEY=... ANTHROPIC_API_KEY=... uv run pytest -m eval
+    YNAB_API_KEY=... EVAL_DRIVER=agent-sdk uv run pytest -m eval   # subscription
 """
 
 from __future__ import annotations

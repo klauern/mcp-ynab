@@ -207,7 +207,7 @@ async def get_month(budget_id: str, month: str = "current") -> str:
     """
     async with await _s.get_ynab_client() as client:
         months_api = _s.MonthsApi(client)
-        response = months_api.get_budget_month(budget_id, _resolve_month(month))
+        response = months_api.get_plan_month(budget_id, _resolve_month(month))
         return _render_month_markdown(response.data.month)
 
 
@@ -402,7 +402,11 @@ async def update_category(
             "goal_target_date, or goal_needs_whole_amount must be provided."
         )
     goal_target_milliunits = int(round(goal_target * 1000)) if goal_target is not None else None
-    parsed_goal_date = date.fromisoformat(goal_target_date) if goal_target_date else None
+    # `is not None` (not truthiness) so an empty string raises a clear ValueError
+    # rather than silently slipping past the guard above as a no-op update.
+    parsed_goal_date = (
+        date.fromisoformat(goal_target_date) if goal_target_date is not None else None
+    )
     # ExistingCategory serializes with exclude_none, so only the fields set here
     # reach the wire; omitted fields are left untouched by YNAB's PATCH.
     wrapper = PatchCategoryWrapper(

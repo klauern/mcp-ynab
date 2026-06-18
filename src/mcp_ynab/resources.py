@@ -257,7 +257,7 @@ async def _fetch_month_text(budget_id: str, month: str) -> list[types.TextConten
     """Fetch a month snapshot and return it as a single TextContent block."""
     async with await _s.get_ynab_client() as client:
         months_api = _s.MonthsApi(client)
-        response = months_api.get_budget_month(budget_id, _resolve_month(month))
+        response = months_api.get_plan_month(budget_id, _resolve_month(month))
         return [types.TextContent(type="text", text=_render_month_markdown(response.data.month))]
 
 

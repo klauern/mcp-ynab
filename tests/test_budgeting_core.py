@@ -101,7 +101,7 @@ async def test_get_month_renders_summary_and_groups(
             category_group_name="Bills",
         ),
     ]
-    mock_ynab_apis.months.get_budget_month.return_value = _resp(
+    mock_ynab_apis.months.get_plan_month.return_value = _resp(
         month=_month_detail_mock(categories=cats)
     )
 
@@ -113,7 +113,7 @@ async def test_get_month_renders_summary_and_groups(
     assert "## Bills" in result and "## Daily" in result
     assert "Groceries" in result and "Rent" in result
     # Verify SDK call shape
-    args = mock_ynab_apis.months.get_budget_month.call_args
+    args = mock_ynab_apis.months.get_plan_month.call_args
     assert args.args[0] == "budget-1"
     assert args.args[1] == date.today().replace(day=1)
 
@@ -122,14 +122,14 @@ async def test_get_month_renders_summary_and_groups(
 async def test_get_month_accepts_explicit_iso_date(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    mock_ynab_apis.months.get_budget_month.return_value = _resp(
+    mock_ynab_apis.months.get_plan_month.return_value = _resp(
         month=_month_detail_mock(month_iso="2026-04-01")
     )
 
     result = await server.get_month("budget-1", "2026-04-01")
 
     assert "2026-04-01" in result
-    args = mock_ynab_apis.months.get_budget_month.call_args
+    args = mock_ynab_apis.months.get_plan_month.call_args
     assert args.args[1] == date(2026, 4, 1)
 
 
@@ -137,7 +137,7 @@ async def test_get_month_accepts_explicit_iso_date(
 async def test_get_month_handles_missing_age_of_money(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    mock_ynab_apis.months.get_budget_month.return_value = _resp(
+    mock_ynab_apis.months.get_plan_month.return_value = _resp(
         month=_month_detail_mock(age_of_money=None)
     )
 
@@ -292,7 +292,7 @@ async def test_move_money_rejects_same_source_and_destination(
 async def test_current_month_resource_returns_text_content(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    mock_ynab_apis.months.get_budget_month.return_value = _resp(
+    mock_ynab_apis.months.get_plan_month.return_value = _resp(
         month=_month_detail_mock(month_iso="2026-05-01")
     )
 
@@ -301,7 +301,7 @@ async def test_current_month_resource_returns_text_content(
     assert isinstance(result, list) and len(result) == 1
     assert result[0].type == "text"
     assert "# YNAB Month: 2026-05-01" in result[0].text
-    args = mock_ynab_apis.months.get_budget_month.call_args
+    args = mock_ynab_apis.months.get_plan_month.call_args
     assert args.args[1] == date.today().replace(day=1)
 
 
@@ -309,7 +309,7 @@ async def test_current_month_resource_returns_text_content(
 async def test_arbitrary_month_resource_uses_iso_date(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    mock_ynab_apis.months.get_budget_month.return_value = _resp(
+    mock_ynab_apis.months.get_plan_month.return_value = _resp(
         month=_month_detail_mock(month_iso="2026-03-01")
     )
 
@@ -317,7 +317,7 @@ async def test_arbitrary_month_resource_uses_iso_date(
 
     assert isinstance(result, list) and len(result) == 1
     assert "2026-03-01" in result[0].text
-    args = mock_ynab_apis.months.get_budget_month.call_args
+    args = mock_ynab_apis.months.get_plan_month.call_args
     assert args.args[1] == date(2026, 3, 1)
 
 
@@ -447,6 +447,31 @@ async def test_update_category_omits_unset_fields_from_payload(
 async def test_update_category_requires_at_least_one_field() -> None:
     with pytest.raises(ValueError, match="At least one of"):
         await server.update_category("budget-1", "c-1")
+
+
+@pytest.mark.asyncio
+async def test_update_category_rejects_empty_goal_target_date() -> None:
+    # An empty string slips past the "at least one field" guard but parses to
+    # nothing — surface it as a clear error rather than a silent no-op update.
+    with pytest.raises(ValueError):
+        await server.update_category("budget-1", "c-1", goal_target_date="")
+
+
+def test_cache_categories_survives_uuid_category_ids(tmp_path) -> None:
+    """ynab v4 Category.to_dict() yields uuid.UUID ids; the cache must persist
+    them without a json.dump TypeError (regression for the v4 SDK bump)."""
+    import uuid
+
+    from mcp_ynab.server import YNABResources
+
+    cid = uuid.uuid4()
+    YNABResources(config_dir=tmp_path).cache_categories(
+        "b-1", [{"id": cid, "name": "Groceries", "category_group_name": "Food"}]
+    )
+    # A fresh instance reloads from disk — a write crash (pre-fix) or a raw UUID
+    # on disk would surface here.
+    reloaded = YNABResources(config_dir=tmp_path).get_cached_category_records("b-1")
+    assert reloaded and reloaded[0]["id"] == str(cid)
 
 
 # ---------------------------------------------------------------------------

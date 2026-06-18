@@ -37,7 +37,7 @@ def integration_first_budget_id() -> str:
         budgets = PlansApi(client).get_plans().data.plans
         if not budgets:
             pytest.skip("YNAB account has no budgets")
-        return budgets[0].id
+        return str(budgets[0].id)
 
 
 @pytest.fixture(scope="session")
@@ -52,7 +52,7 @@ def integration_first_account_id(integration_first_budget_id: str) -> str:
         accounts = AccountsApi(client).get_accounts(integration_first_budget_id).data.accounts
         for acct in accounts:
             if not acct.closed and not acct.deleted:
-                return acct.id
+                return str(acct.id)
         pytest.skip("First budget has no open accounts")
         raise RuntimeError("unreachable")  # for type checker
 

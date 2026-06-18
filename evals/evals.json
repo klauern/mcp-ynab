@@ -1,0 +1,78 @@
+{
+  "skill_name": "mcp-ynab",
+  "description": "LLM-driven evals. Each prompt is given to Claude with the mcp-ynab tools over the real MCP stdio transport. Scope is read-only + dry-run: no eval should perform a real YNAB write. See tests/integration/test_llm_evals.py.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "Dining Spend Last Month",
+      "prompt": "How much did I spend on dining last month?",
+      "expected_output": "Reports the total dining or restaurant category activity for last month, with enough context to identify the budget, category, month, and dollar amount used.",
+      "category": "read",
+      "expectations": []
+    },
+    {
+      "id": 2,
+      "name": "Uncategorized Transactions",
+      "prompt": "Show me the uncategorized transactions that still need cleanup.",
+      "expected_output": "Lists uncategorized transactions needing attention, including dates, payees, amounts, ids, and whether each transaction is approved.",
+      "category": "read",
+      "expectations": []
+    },
+    {
+      "id": 3,
+      "name": "Over Budget Categories",
+      "prompt": "Which categories are over budget this month?",
+      "expected_output": "Identifies categories with negative current-month balances or overspending, grouped or summarized clearly with category names and dollar amounts.",
+      "category": "read",
+      "expectations": []
+    },
+    {
+      "id": 4,
+      "name": "Cash Balance Summary",
+      "prompt": "What's my current cash balance across accounts?",
+      "expected_output": "Summarizes current cash or on-budget account balances and gives a total in dollars, excluding closed or deleted accounts when account status is available.",
+      "category": "read",
+      "expectations": []
+    },
+    {
+      "id": 5,
+      "name": "Recent Large Transactions",
+      "prompt": "What are my largest transactions from the last 30 days?",
+      "expected_output": "Returns the largest recent transactions with date, payee, category when available, amount, and transaction id so the user can inspect unusual spending.",
+      "category": "read",
+      "expectations": []
+    },
+    {
+      "id": 6,
+      "name": "Dry Run Grocery Categorization",
+      "prompt": "Categorize the five most recent uncategorized transactions as Groceries, but don't actually change anything.",
+      "expected_output": "Plans a dry-run bulk PATCH using SaveTransactionWithIdOrImportId entries for five transaction ids with the resolved Groceries category id, without performing a real write.",
+      "category": "mutation",
+      "expectations": []
+    },
+    {
+      "id": 7,
+      "name": "Dry Run Approve Last Week",
+      "prompt": "Approve every unapproved transaction from last week, but only show me what you would update.",
+      "expected_output": "Plans a dry-run bulk PATCH where each selected transaction payload contains its id and approved=true, and does not submit the mutation.",
+      "category": "mutation",
+      "expectations": []
+    },
+    {
+      "id": 8,
+      "name": "Dry Run Move Dining Money",
+      "prompt": "Move $50 from Dining Out to Groceries for this month as a dry run.",
+      "expected_output": "Describes the intended month-category updates needed to reduce Dining Out by $50 and increase Groceries by $50, including resolved category ids and final budgeted amounts when available, without applying the changes.",
+      "category": "mutation",
+      "expectations": []
+    },
+    {
+      "id": 9,
+      "name": "Dry Run Set Category Goal Target",
+      "prompt": "Without changing anything yet, tell me exactly which tool and arguments you would use to set the monthly goal target for my Groceries category to $200.",
+      "expected_output": "Identifies the update_category tool with a goal_target argument of 200 dollars (the server converts dollars to milliunits) for the resolved Groceries category, and explicitly does not apply the change.",
+      "category": "mutation",
+      "expectations": []
+    }
+  ]
+}

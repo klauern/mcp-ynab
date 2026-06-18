@@ -40,10 +40,15 @@ tasks:
     cmds:
       - uv run pytest
 
-  test:integration:
-    desc: "Run the integration tests"
+  test:eval:
+    desc: "Run LLM-driven evals (needs ANTHROPIC_API_KEY + YNAB_API_KEY; costs API tokens)"
     cmds:
-      - uv run pytest -m "integration"
+      - uv run pytest -m "eval"
+
+  test:integration:
+    desc: "Run the integration tests (excludes the costly LLM evals)"
+    cmds:
+      - uv run pytest -m "integration and not eval"
 
   test:all:
     desc: "Run all tests including integration tests"

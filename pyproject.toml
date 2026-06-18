@@ -64,6 +64,8 @@ dev = [
   "ruff>=0.9.4",
   "mypy>=1.15.0",
   "interrogate>=1.7.0",
+  # Drives the LLM-eval integration tests (tests/integration/test_llm_evals.py).
+  "anthropic>=0.40.0",
 ]
 
 [tool.interrogate]
@@ -80,6 +82,7 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
   "integration: marks tests as integration tests that require YNAB API access",
+  "eval: LLM-driven evals — require ANTHROPIC_API_KEY + YNAB_API_KEY and cost API tokens (also marked integration)",
   "asyncio: mark tests as async tests",
 ]
 addopts = "-v -ra --strict-markers -m 'not integration'"

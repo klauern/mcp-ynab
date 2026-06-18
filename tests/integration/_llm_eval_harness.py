@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -142,13 +143,16 @@ def parse_verdict(content_blocks: list[Any]) -> tuple[bool, str]:
 def _server_params() -> Any:
     """Build StdioServerParameters for launching the mcp-ynab subprocess.
 
-    Overridable via EVAL_MCP_COMMAND / EVAL_MCP_ARGS (JSON list) for unusual
-    environments; defaults to ``uv run mcp-ynab``.
+    Defaults to ``<this interpreter> -m mcp_ynab`` so the eval always exercises
+    the *development* server in the current venv (the editable install on the
+    checked-out branch) rather than a globally installed mcp-ynab. Override via
+    EVAL_MCP_COMMAND / EVAL_MCP_ARGS (JSON list) to point at a different build —
+    e.g. EVAL_MCP_COMMAND=mcp-ynab EVAL_MCP_ARGS='[]' for the installed tool.
     """
     from mcp import StdioServerParameters
 
-    command = os.getenv("EVAL_MCP_COMMAND", "uv")
-    args = json.loads(os.getenv("EVAL_MCP_ARGS", '["run", "mcp-ynab"]'))
+    command = os.getenv("EVAL_MCP_COMMAND", sys.executable)
+    args = json.loads(os.getenv("EVAL_MCP_ARGS", '["-m", "mcp_ynab"]'))
     return StdioServerParameters(command=command, args=args, env=dict(os.environ))
 
 

@@ -252,3 +252,47 @@ async def test_drive_prompt_marks_stopped_early_when_loop_never_finishes(
 
     assert run.stopped_early is True
     assert len(run.tool_calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# agent-sdk driver — config/plumbing only (no subscription, no network).
+# ---------------------------------------------------------------------------
+
+
+def test_current_driver_default_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EVAL_DRIVER", raising=False)
+    assert harness.current_driver() == "messages-api"
+    monkeypatch.setenv("EVAL_DRIVER", "agent-sdk")
+    assert harness.current_driver() == "agent-sdk"
+
+
+def test_normalize_tool_name_strips_mcp_prefix() -> None:
+    assert harness._normalize_tool_name("mcp__ynab__execute") == "execute"
+    assert harness._normalize_tool_name("mcp__ynab__search") == "search"
+    assert harness._normalize_tool_name("Bash") == "Bash"  # built-ins unchanged
+
+
+def test_subscription_env_forces_subscription_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EVAL_CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    env = harness._subscription_env()
+    # Blanks out the vars that would otherwise outrank the claude CLI login.
+    assert env["ANTHROPIC_API_KEY"] == ""
+    assert env["ANTHROPIC_AUTH_TOKEN"] == ""
+    assert env["CLAUDE_CODE_USE_BEDROCK"] == "false"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env  # falls back to existing login
+    monkeypatch.setenv("EVAL_CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-xyz")
+    assert harness._subscription_env()["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-xyz"
+
+
+def test_agent_sdk_options_shape() -> None:
+    opts = harness.agent_sdk_options("claude-sonnet-4-6")
+    assert opts.model == "claude-sonnet-4-6"
+    assert "ynab" in opts.mcp_servers
+    assert opts.mcp_servers["ynab"]["type"] == "stdio"
+    # Only the Code Mode tools are pre-approved; unlisted tools are denied.
+    assert opts.allowed_tools == ["mcp__ynab__execute", "mcp__ynab__search"]
+    assert opts.permission_mode == "dontAsk"
+    # Isolated from the user's global Claude Code config for reproducibility.
+    assert opts.setting_sources == []
+    assert opts.strict_mcp_config is True

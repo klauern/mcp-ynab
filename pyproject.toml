@@ -66,6 +66,7 @@ dev = [
   "interrogate>=1.7.0",
   # Drives the LLM-eval integration tests (tests/integration/test_llm_evals.py).
   "anthropic>=0.40.0",
+  "claude-agent-sdk>=0.2.104",
 ]
 
 [tool.interrogate]

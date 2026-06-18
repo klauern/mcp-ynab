@@ -23,6 +23,7 @@ from tests.integration._llm_eval_harness import (
     DEFAULT_EVAL_MODEL,
     DEFAULT_JUDGE_MODEL,
     YNAB_WRITE_TOOLS,
+    current_driver,
     drive_prompt,
     eval_api_key,
     judge_answer,
@@ -44,10 +45,13 @@ _EVAL_CASES = _load_eval_cases()
 
 def _require_eval_keys() -> None:
     missing = []
-    if not eval_api_key():
-        missing.append("ANTHROPIC_API_KEY (or EVAL_ANTHROPIC_API_KEY)")
     if not os.getenv("YNAB_API_KEY"):
         missing.append("YNAB_API_KEY")
+    # The messages-api driver needs an Anthropic API key; the agent-sdk driver
+    # authenticates via the Claude subscription (logged-in `claude` CLI or
+    # CLAUDE_CODE_OAUTH_TOKEN), which can't be cheaply pre-checked here.
+    if current_driver() == "messages-api" and not eval_api_key():
+        missing.append("ANTHROPIC_API_KEY (or EVAL_ANTHROPIC_API_KEY)")
     if missing:
         pytest.skip(f"LLM eval requires {', '.join(missing)} in the environment")
 

@@ -29,6 +29,21 @@ from typing import Any
 DEFAULT_EVAL_MODEL = "claude-sonnet-4-6"
 DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001"
 
+# Two ways to drive the eval, selected by EVAL_DRIVER:
+#   "messages-api" (default) — the anthropic Messages API; bills API tokens.
+#   "agent-sdk"             — the Claude Agent SDK (the Claude Code engine),
+#                             authenticated by your Claude *subscription* via the
+#                             logged-in `claude` CLI (or CLAUDE_CODE_OAUTH_TOKEN).
+#                             Draws against your subscription's usage, not an API
+#                             balance.
+DEFAULT_DRIVER = "messages-api"
+
+
+def current_driver() -> str:
+    """The selected eval driver (``messages-api`` or ``agent-sdk``)."""
+    return os.getenv("EVAL_DRIVER", DEFAULT_DRIVER)
+
+
 # Orient the model to the Code Mode surface so the eval measures whether the
 # tools work — not whether the model can rediscover the Code Mode convention
 # cold. Mirrors what the ynab://code-mode/examples + stubs resources convey.
@@ -173,7 +188,21 @@ def _server_params() -> Any:
 
 
 async def drive_prompt(prompt: str, *, model: str, max_iterations: int = 8) -> EvalRun:
-    """Drive ``prompt`` to a final answer using the live mcp-ynab tools."""
+    """Drive ``prompt`` to a final answer using the live mcp-ynab tools.
+
+    Dispatches to the configured backend (EVAL_DRIVER). Both return an EvalRun
+    with the same shape so the structural checks and judge work identically.
+    """
+    driver = current_driver()
+    if driver == "agent-sdk":
+        return await _drive_via_agent_sdk(prompt, model=model)
+    if driver == "messages-api":
+        return await _drive_via_messages_api(prompt, model=model, max_iterations=max_iterations)
+    raise ValueError(f"Unknown EVAL_DRIVER {driver!r} (use 'messages-api' or 'agent-sdk').")
+
+
+async def _drive_via_messages_api(prompt: str, *, model: str, max_iterations: int = 8) -> EvalRun:
+    """Drive ``prompt`` with the anthropic Messages API (bills API tokens)."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
@@ -225,29 +254,170 @@ async def drive_prompt(prompt: str, *, model: str, max_iterations: int = 8) -> E
     return run
 
 
-async def judge_answer(
-    prompt: str, expected_output: str, final_text: str, *, model: str
-) -> tuple[bool, str]:
-    """Use an LLM judge to score ``final_text`` against ``expected_output``."""
-    client = _anthropic_client()
-    system = (
-        "You are a strict but fair evaluator of an AI budgeting assistant. Given the user's "
-        "task, a description of the expected output, and the assistant's final answer, decide "
-        "whether the answer satisfies the expectation. Judge substance, not exact wording. "
-        "Always respond by calling record_verdict."
+def _normalize_tool_name(name: str) -> str:
+    """Strip the ``mcp__<server>__`` prefix the Agent SDK adds to MCP tools.
+
+    So ``mcp__ynab__execute`` becomes ``execute`` and the structural checks
+    (read-tool engagement, write-tool gate) match across both drivers.
+    """
+    return name.split("__")[-1] if name.startswith("mcp__") else name
+
+
+def _subscription_env() -> dict[str, str]:
+    """Env overrides that force the Agent SDK onto Claude subscription auth.
+
+    Blanks out any API-key / Bedrock vars that would win over the logged-in
+    `claude` CLI credentials; honors an explicit EVAL_CLAUDE_CODE_OAUTH_TOKEN
+    (from `claude setup-token`) if set, else falls back to the existing login.
+    """
+    env = {
+        "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_AUTH_TOKEN": "",
+        "CLAUDE_CODE_USE_BEDROCK": "false",
+    }
+    token = os.getenv("EVAL_CLAUDE_CODE_OAUTH_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
+    if token:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    return env
+
+
+def agent_sdk_options(model: str) -> Any:
+    """Build ClaudeAgentOptions for the subscription-auth Agent SDK driver."""
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    command = os.getenv("EVAL_MCP_COMMAND", sys.executable)
+    args = json.loads(os.getenv("EVAL_MCP_ARGS", '["-m", "mcp_ynab"]'))
+
+    return ClaudeAgentOptions(
+        model=model,
+        mcp_servers={
+            "ynab": {
+                "type": "stdio",
+                "command": command,
+                "args": args,
+                "env": dict(os.environ),
+            }
+        },
+        # Only the Code Mode tools may run; dontAsk denies anything unlisted
+        # rather than prompting (this is a non-interactive eval).
+        allowed_tools=["mcp__ynab__execute", "mcp__ynab__search"],
+        disallowed_tools=["Bash", "Read", "Write", "Edit", "WebFetch", "WebSearch"],
+        permission_mode="dontAsk",
+        # Isolate from the user's global Claude Code config (other MCP servers,
+        # hooks, skills, CLAUDE.md) so the eval is reproducible.
+        setting_sources=[],
+        strict_mcp_config=True,
+        max_turns=int(os.getenv("EVAL_MAX_TURNS", "12")),
+        env=_subscription_env(),
     )
-    user = (
+
+
+async def _drive_via_agent_sdk(prompt: str, *, model: str) -> EvalRun:
+    """Drive ``prompt`` with the Claude Agent SDK (subscription auth)."""
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeSDKClient,
+        TextBlock,
+        ToolUseBlock,
+    )
+
+    run = EvalRun()
+    async with ClaudeSDKClient(options=agent_sdk_options(model)) as client:
+        await client.query(prompt)
+        async for message in client.receive_response():
+            if not isinstance(message, AssistantMessage):
+                continue
+            for block in message.content:
+                if isinstance(block, ToolUseBlock):
+                    run.tool_calls.append(
+                        ToolCall(_normalize_tool_name(block.name), dict(block.input or {}))
+                    )
+                elif isinstance(block, TextBlock) and block.text and block.text.strip():
+                    run.final_text = block.text  # last non-empty assistant text wins
+    return run
+
+
+_JUDGE_SYSTEM = (
+    "You are a strict but fair evaluator of an AI budgeting assistant. Given the user's "
+    "task, a description of the expected output, and the assistant's final answer, decide "
+    "whether the answer satisfies the expectation. Judge substance, not exact wording."
+)
+
+
+def _judge_user_prompt(prompt: str, expected_output: str, final_text: str) -> str:
+    return (
         f"User task:\n{prompt}\n\n"
         f"Expected output:\n{expected_output}\n\n"
         f"Assistant final answer:\n{final_text or '(empty)'}\n\n"
+    )
+
+
+async def judge_answer(
+    prompt: str, expected_output: str, final_text: str, *, model: str
+) -> tuple[bool, str]:
+    """Use an LLM judge to score ``final_text`` against ``expected_output``.
+
+    Routes through the same driver as the run so an agent-sdk eval judges on the
+    subscription too (rather than falling back to the billed Messages API).
+    """
+    if current_driver() == "agent-sdk":
+        return await _judge_via_agent_sdk(prompt, expected_output, final_text, model=model)
+
+    client = _anthropic_client()
+    user = _judge_user_prompt(prompt, expected_output, final_text) + (
         "Call record_verdict with whether the answer satisfies the expected output."
     )
     response = await client.messages.create(
         model=model,
         max_tokens=512,
-        system=system,
+        system=_JUDGE_SYSTEM + " Always respond by calling record_verdict.",
         tools=[_verdict_tool_schema()],
         tool_choice={"type": "tool", "name": "record_verdict"},
         messages=[{"role": "user", "content": user}],
     )
     return parse_verdict(response.content)
+
+
+async def _judge_via_agent_sdk(
+    prompt: str, expected_output: str, final_text: str, *, model: str
+) -> tuple[bool, str]:
+    """LLM judge over the Agent SDK (subscription auth), no tools.
+
+    Asks for a ``VERDICT: pass|fail`` first line plus a one-line reason, and
+    parses that — structured tool-calling isn't needed for a yes/no verdict.
+    """
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ClaudeSDKClient,
+        TextBlock,
+    )
+
+    options = ClaudeAgentOptions(
+        model=model,
+        allowed_tools=[],
+        disallowed_tools=["Bash", "Read", "Write", "Edit", "WebFetch", "WebSearch"],
+        permission_mode="dontAsk",
+        setting_sources=[],
+        strict_mcp_config=True,
+        max_turns=1,
+        env=_subscription_env(),
+    )
+    instruction = (
+        _JUDGE_SYSTEM
+        + "\n\n"
+        + _judge_user_prompt(prompt, expected_output, final_text)
+        + "Reply with a first line exactly 'VERDICT: pass' or 'VERDICT: fail', then a "
+        "one-sentence reason on the next line. Do not use any tools."
+    )
+    text = ""
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(instruction)
+        async for message in client.receive_response():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock) and block.text:
+                        text += block.text
+    lowered = text.lower()
+    passed = "verdict: pass" in lowered or lowered.lstrip().startswith("pass")
+    return passed, text.strip()[:500] or "judge returned no text"

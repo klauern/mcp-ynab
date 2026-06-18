@@ -66,10 +66,12 @@ _AUTH_HELP = (
 
 async def _run(prompt: str, model: str) -> int:
     problems = []
-    if not harness.eval_api_key():
-        problems.append("ANTHROPIC_API_KEY (or EVAL_ANTHROPIC_API_KEY)")
     if not os.getenv("YNAB_API_KEY"):
         problems.append("YNAB_API_KEY")
+    # agent-sdk authenticates via the Claude subscription (claude CLI login),
+    # so it needs no Anthropic API key; messages-api does.
+    if harness.current_driver() == "messages-api" and not harness.eval_api_key():
+        problems.append("ANTHROPIC_API_KEY (or EVAL_ANTHROPIC_API_KEY)")
     if problems:
         print(
             f"Missing required credential(s): {', '.join(problems)}. "

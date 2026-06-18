@@ -198,7 +198,7 @@ async def test_drive_prompt_runs_tool_loop_and_returns_final_text(
     tool_log: list = []
 
     monkeypatch.setattr(
-        anthropic, "AsyncAnthropic", lambda: _FakeAnthropic(responses, create_calls)
+        anthropic, "AsyncAnthropic", lambda **_kw: _FakeAnthropic(responses, create_calls)
     )
     monkeypatch.setattr(mcp, "ClientSession", _make_fake_session_cls(tool_log))
     monkeypatch.setattr(mcp.client.stdio, "stdio_client", _make_fake_stdio_client())
@@ -242,7 +242,9 @@ async def test_drive_prompt_marks_stopped_early_when_loop_never_finishes(
         async def create(self, **kwargs: object):
             return _always_tool_use(**kwargs)
 
-    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda: SimpleNamespace(messages=_Loop()))
+    monkeypatch.setattr(
+        anthropic, "AsyncAnthropic", lambda **_kw: SimpleNamespace(messages=_Loop())
+    )
     monkeypatch.setattr(mcp, "ClientSession", _make_fake_session_cls([]))
     monkeypatch.setattr(mcp.client.stdio, "stdio_client", _make_fake_stdio_client())
 

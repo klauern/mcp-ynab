@@ -140,6 +140,22 @@ def parse_verdict(content_blocks: list[Any]) -> tuple[bool, str]:
     return False, "judge did not return a verdict"
 
 
+def eval_api_key() -> str | None:
+    """The Anthropic key to drive evals with.
+
+    Prefers EVAL_ANTHROPIC_API_KEY so the eval can use a real Console API key
+    without colliding with an ANTHROPIC_API_KEY that the shell may have set to a
+    Claude Code OAuth token (which the Messages API rejects with 401).
+    """
+    return os.getenv("EVAL_ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+
+
+def _anthropic_client() -> Any:
+    import anthropic
+
+    return anthropic.AsyncAnthropic(api_key=eval_api_key())
+
+
 def _server_params() -> Any:
     """Build StdioServerParameters for launching the mcp-ynab subprocess.
 
@@ -158,11 +174,10 @@ def _server_params() -> Any:
 
 async def drive_prompt(prompt: str, *, model: str, max_iterations: int = 8) -> EvalRun:
     """Drive ``prompt`` to a final answer using the live mcp-ynab tools."""
-    import anthropic
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
-    client = anthropic.AsyncAnthropic()
+    client = _anthropic_client()
     run = EvalRun()
 
     async with stdio_client(_server_params()) as (read, write):
@@ -214,9 +229,7 @@ async def judge_answer(
     prompt: str, expected_output: str, final_text: str, *, model: str
 ) -> tuple[bool, str]:
     """Use an LLM judge to score ``final_text`` against ``expected_output``."""
-    import anthropic
-
-    client = anthropic.AsyncAnthropic()
+    client = _anthropic_client()
     system = (
         "You are a strict but fair evaluator of an AI budgeting assistant. Given the user's "
         "task, a description of the expected output, and the assistant's final answer, decide "

@@ -40,17 +40,51 @@ except Exception:  # dotenv is optional for this script
 import _llm_eval_harness as harness  # noqa: E402
 
 
+def _is_auth_error(exc: BaseException) -> bool:
+    """True if exc is (or a group containing) an Anthropic auth error.
+
+    The error surfaces wrapped in anyio ExceptionGroups from the MCP task group,
+    so unwrap groups recursively.
+    """
+    import anthropic
+
+    if isinstance(exc, anthropic.AuthenticationError):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_is_auth_error(sub) for sub in exc.exceptions)
+    return False
+
+
+_AUTH_HELP = (
+    "Anthropic auth failed (401): the key in use is not a valid Console API key.\n"
+    "If your shell's ANTHROPIC_API_KEY is a Claude Code OAuth token (sk-ant-oat...),\n"
+    "it won't work against the Messages API. Set a real Console key for the eval:\n"
+    "    export EVAL_ANTHROPIC_API_KEY=sk-ant-api...\n"
+    "(EVAL_ANTHROPIC_API_KEY takes precedence and leaves your Claude Code setup alone.)"
+)
+
+
 async def _run(prompt: str, model: str) -> int:
-    missing = [k for k in ("ANTHROPIC_API_KEY", "YNAB_API_KEY") if not os.getenv(k)]
-    if missing:
+    problems = []
+    if not harness.eval_api_key():
+        problems.append("ANTHROPIC_API_KEY (or EVAL_ANTHROPIC_API_KEY)")
+    if not os.getenv("YNAB_API_KEY"):
+        problems.append("YNAB_API_KEY")
+    if problems:
         print(
-            f"Missing required env var(s): {', '.join(missing)}. "
+            f"Missing required credential(s): {', '.join(problems)}. "
             "Set them in your shell or a .env file at the repo root.",
             file=sys.stderr,
         )
         return 2
 
-    run = await harness.drive_prompt(prompt, model=model)
+    try:
+        run = await harness.drive_prompt(prompt, model=model)
+    except BaseException as exc:  # noqa: BLE001 - re-raised unless it's an auth error
+        if _is_auth_error(exc):
+            print(_AUTH_HELP, file=sys.stderr)
+            return 2
+        raise
 
     print(f"=== model: {model} | tool calls: {len(run.tool_calls)} ===")
     for i, call in enumerate(run.tool_calls, start=1):

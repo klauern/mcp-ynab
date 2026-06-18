@@ -8,6 +8,7 @@ SDK objects.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -26,6 +27,16 @@ from mcp_ynab.state import Preferences
 # ---------------------------------------------------------------------------
 # Helpers for building API responses
 # ---------------------------------------------------------------------------
+
+
+def _uuid(label: str) -> str:
+    """Deterministic valid UUID string for a readable label.
+
+    ynab SDK >=2.0 validates id fields (account_id, category_id, payee_id) as
+    UUIDs, so tests must feed real UUIDs wherever a value flows into SDK model
+    construction. uuid5 keeps them stable and debuggable per label.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, label))
 
 
 def _resp(**data_kwargs: object) -> MagicMock:
@@ -143,8 +154,8 @@ def _category_group_mock(name: str, categories: list[MagicMock]) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_get_budgets_renders_markdown_list(mock_ynab_apis: SimpleNamespace) -> None:
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[
             _budget_mock("b-1", "Personal"),
             _budget_mock("b-2", "Business"),
         ]
@@ -161,7 +172,7 @@ async def test_get_budgets_renders_markdown_list(mock_ynab_apis: SimpleNamespace
 
 @pytest.mark.asyncio
 async def test_get_budgets_handles_empty_budget_list(mock_ynab_apis: SimpleNamespace) -> None:
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(budgets=[])
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(plans=[])
 
     result = await server.get_budgets()
 
@@ -170,7 +181,7 @@ async def test_get_budgets_handles_empty_budget_list(mock_ynab_apis: SimpleNames
 
 @pytest.mark.asyncio
 async def test_get_budgets_propagates_api_exception(mock_ynab_apis: SimpleNamespace) -> None:
-    mock_ynab_apis.budgets.get_budgets.side_effect = ApiException(status=500, reason="Boom")
+    mock_ynab_apis.budgets.get_plans.side_effect = ApiException(status=500, reason="Boom")
 
     with pytest.raises(ApiException):
         await server.get_budgets()
@@ -190,9 +201,7 @@ async def test_get_account_balance_converts_milliunits_to_dollars(
     isolated = YNABResources(config_dir=tmp_path)
     monkeypatch.setattr(server, "ynab_resources", isolated)
 
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("b-1", "Personal")]
-    )
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(plans=[_budget_mock("b-1", "Personal")])
     account_response = _resp(account=SimpleNamespace(balance=125_000))
     mock_ynab_apis.accounts.get_account_by_id.return_value = account_response
 
@@ -219,7 +228,7 @@ async def test_get_account_balance_uses_preferred_budget_id_when_set(
 
     assert result == pytest.approx(42.0)
     # Preferred budget short-circuits the get_budgets fallback
-    mock_ynab_apis.budgets.get_budgets.assert_not_called()
+    mock_ynab_apis.budgets.get_plans.assert_not_called()
     mock_ynab_apis.accounts.get_account_by_id.assert_called_once_with("preferred-b", "acct-1")
 
 
@@ -232,8 +241,8 @@ async def test_get_account_balance_uses_only_budget_when_no_preference(
     isolated = YNABResources(config_dir=tmp_path)
     monkeypatch.setattr(server, "ynab_resources", isolated)
 
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("first-b", "Default")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("first-b", "Default")]
     )
     account_response = _resp(account=SimpleNamespace(balance=1_000))
     mock_ynab_apis.accounts.get_account_by_id.return_value = account_response
@@ -241,7 +250,7 @@ async def test_get_account_balance_uses_only_budget_when_no_preference(
     result = await server.get_account_balance("acct-1")
 
     assert result == pytest.approx(1.0)
-    mock_ynab_apis.budgets.get_budgets.assert_called_once()
+    mock_ynab_apis.budgets.get_plans.assert_called_once()
     mock_ynab_apis.accounts.get_account_by_id.assert_called_once_with("first-b", "acct-1")
 
 
@@ -1005,14 +1014,14 @@ async def test_create_transaction_uses_preferred_budget_id_when_set(
     mock_ynab_apis.transactions.create_transaction.return_value = _resp(transaction=created_txn)
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=-12.34,
         payee_name="Test Payee",
     )
 
     assert result == {"id": "new-txn", "amount": -12_340}
     # Should NOT have called get_budgets — preferred budget short-circuits
-    mock_ynab_apis.budgets.get_budgets.assert_not_called()
+    mock_ynab_apis.budgets.get_plans.assert_not_called()
     call = mock_ynab_apis.transactions.create_transaction.call_args
     assert call.args[0] == "preferred-b"
 
@@ -1026,21 +1035,21 @@ async def test_create_transaction_uses_only_budget_when_no_preference(
     isolated = YNABResources(config_dir=tmp_path)
     monkeypatch.setattr(server, "ynab_resources", isolated)
 
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("first-b", "Default")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("first-b", "Default")]
     )
     created_txn = MagicMock()
     created_txn.to_dict.return_value = {"id": "new-txn"}
     mock_ynab_apis.transactions.create_transaction.return_value = _resp(transaction=created_txn)
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=10.0,
         payee_name="Test Payee",
     )
 
     assert result == {"id": "new-txn"}
-    mock_ynab_apis.budgets.get_budgets.assert_called_once()
+    mock_ynab_apis.budgets.get_plans.assert_called_once()
     call = mock_ynab_apis.transactions.create_transaction.call_args
     assert call.args[0] == "first-b"
 
@@ -1058,7 +1067,7 @@ async def test_create_transaction_returns_empty_dict_when_response_missing(
     mock_ynab_apis.transactions.create_transaction.return_value = _resp(transaction=None)
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=5.0,
         payee_name="Test",
     )
@@ -1081,15 +1090,16 @@ async def test_create_transaction_accepts_payee_id_for_transfers(
     mock_ynab_apis.transactions.create_transaction.return_value = _resp(transaction=created_txn)
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=-25.0,
-        payee_id="transfer-payee-1",
+        payee_id=_uuid("transfer-payee-1"),
     )
 
     assert result == {"id": "new-transfer"}
     call = mock_ynab_apis.transactions.create_transaction.call_args
     posted = call.args[1].transaction
-    assert posted.payee_id == "transfer-payee-1"
+    # SDK parses payee_id into a uuid.UUID; compare by string value.
+    assert str(posted.payee_id) == _uuid("transfer-payee-1")
     assert posted.payee_name is None
 
 
@@ -1122,22 +1132,26 @@ async def test_bulk_categorize_updates_all_when_server_acks_every_id(
     )
 
     assignments = [
-        {"transaction_id": "t-1", "category_id": "c-coffee"},
-        {"transaction_id": "t-2", "category_id": "c-coffee"},
-        {"transaction_id": "t-3", "category_id": "c-rent"},
+        {"transaction_id": "t-1", "category_id": _uuid("c-coffee")},
+        {"transaction_id": "t-2", "category_id": _uuid("c-coffee")},
+        {"transaction_id": "t-3", "category_id": _uuid("c-rent")},
     ]
     result = await server.bulk_categorize("b-1", assignments)
 
     assert "# Bulk Categorize" in result
     assert "**3 of 3 updated**" in result
-    assert "t-1" in result and "c-coffee" in result and "Updated" in result
+    assert "t-1" in result and _uuid("c-coffee") in result and "Updated" in result
     mock_ynab_apis.transactions.update_transactions.assert_called_once()
     call = mock_ynab_apis.transactions.update_transactions.call_args
     assert call.args[0] == "b-1"
     payload = call.args[1]
     assert len(payload.transactions) == 3
     assert {t.id for t in payload.transactions} == {"t-1", "t-2", "t-3"}
-    assert {t.category_id for t in payload.transactions} == {"c-coffee", "c-rent"}
+    # SDK parses category_id into uuid.UUID; compare by string value.
+    assert {str(t.category_id) for t in payload.transactions} == {
+        _uuid("c-coffee"),
+        _uuid("c-rent"),
+    }
 
 
 @pytest.mark.asyncio
@@ -1147,8 +1161,8 @@ async def test_bulk_categorize_marks_unacked_ids_as_not_found(
     mock_ynab_apis.transactions.update_transactions.return_value = _resp(transaction_ids=["t-1"])
 
     assignments = [
-        {"transaction_id": "t-1", "category_id": "c-1"},
-        {"transaction_id": "t-bad", "category_id": "c-1"},
+        {"transaction_id": "t-1", "category_id": _uuid("c-1")},
+        {"transaction_id": "t-bad", "category_id": _uuid("c-1")},
     ]
     result = await server.bulk_categorize("b-1", assignments)
 
@@ -1174,9 +1188,9 @@ async def test_bulk_categorize_skips_invalid_entries_but_processes_valid_ones(
     mock_ynab_apis.transactions.update_transactions.return_value = _resp(transaction_ids=["t-good"])
 
     assignments = [
-        {"transaction_id": "t-good", "category_id": "c-1"},
+        {"transaction_id": "t-good", "category_id": _uuid("c-1")},
         {"transaction_id": "t-no-category"},
-        {"category_id": "c-1"},
+        {"category_id": _uuid("c-1")},
     ]
     result = await server.bulk_categorize("b-1", assignments)
 
@@ -1209,7 +1223,9 @@ async def test_bulk_categorize_propagates_api_exception(
     )
 
     with pytest.raises(ApiException):
-        await server.bulk_categorize("b-1", [{"transaction_id": "t-1", "category_id": "c-1"}])
+        await server.bulk_categorize(
+            "b-1", [{"transaction_id": "t-1", "category_id": _uuid("c-1")}]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1567,8 +1583,8 @@ async def test_split_transaction_patches_with_subtransactions_when_sum_matches(
     server.PutTransactionWrapper = fake_wrapper  # type: ignore[assignment]
 
     splits = [
-        {"amount": -20.0, "category_id": "cat-food", "memo": "Groceries"},
-        {"amount": -10.0, "category_id": "cat-fun", "payee_name": "Sub-Payee"},
+        {"amount": -20.0, "category_id": _uuid("cat-food"), "memo": "Groceries"},
+        {"amount": -10.0, "category_id": _uuid("cat-fun"), "payee_name": "Sub-Payee"},
     ]
     result = await server.split_transaction("b-1", "t-1", splits)
 
@@ -1578,7 +1594,8 @@ async def test_split_transaction_patches_with_subtransactions_when_sum_matches(
     subs = captured["subtransactions"]
     assert len(subs) == 2
     assert [s.amount for s in subs] == [-20_000, -10_000]
-    assert subs[0].category_id == "cat-food"
+    # SDK parses category_id into uuid.UUID; compare by string value.
+    assert str(subs[0].category_id) == _uuid("cat-food")
     assert subs[0].memo == "Groceries"
     assert subs[1].payee_name == "Sub-Payee"
 
@@ -1600,8 +1617,8 @@ async def test_split_transaction_rejects_when_sum_does_not_match(
             "b-1",
             "t-1",
             [
-                {"amount": -20.0, "category_id": "cat-1"},
-                {"amount": -5.0, "category_id": "cat-2"},
+                {"amount": -20.0, "category_id": _uuid("cat-1")},
+                {"amount": -5.0, "category_id": _uuid("cat-2")},
             ],
         )
 
@@ -1645,7 +1662,7 @@ async def test_split_transaction_raises_when_parent_not_found(
         await server.split_transaction(
             "b-1",
             "t-missing",
-            [{"amount": -10.0, "category_id": "c-1"}],
+            [{"amount": -10.0, "category_id": _uuid("c-1")}],
         )
 
     mock_ynab_apis.transactions.update_transaction.assert_not_called()
@@ -1663,7 +1680,7 @@ async def test_split_transaction_propagates_non_404_api_exception(
         await server.split_transaction(
             "b-1",
             "t-1",
-            [{"amount": -10.0, "category_id": "c-1"}],
+            [{"amount": -10.0, "category_id": _uuid("c-1")}],
         )
 
 
@@ -1750,8 +1767,8 @@ def _budget_resource_mock(
 async def test_list_budgets_resource_renders_markdown_table(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[
             _budget_resource_mock("b-1", "Personal"),
             _budget_resource_mock("b-2", "Business", iso_code="EUR"),
         ]
@@ -1775,7 +1792,7 @@ async def test_list_budgets_resource_renders_markdown_table(
 async def test_list_budgets_resource_handles_empty_list(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(budgets=[])
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(plans=[])
 
     result = await server.list_budgets_resource()
 
@@ -1787,8 +1804,8 @@ async def test_list_budgets_resource_handles_empty_list(
 async def test_list_budgets_resource_filters_deleted_budgets(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[
             _budget_resource_mock("b-active", "Active"),
             _budget_resource_mock("b-deleted", "Old", deleted=True),
         ]
@@ -2005,7 +2022,7 @@ async def test_create_scheduled_transaction_basic(
     )
 
     result = await server.create_scheduled_transaction(
-        "b-1", "acct-1", -15.99, frequency="monthly", payee_name="Netflix"
+        "b-1", _uuid("acct-1"), -15.99, frequency="monthly", payee_name="Netflix"
     )
 
     assert "sched-abc" in result
@@ -2017,7 +2034,8 @@ async def test_create_scheduled_transaction_basic(
     budget_id, wrapper = call.args
     assert budget_id == "b-1"
     txn = wrapper.scheduled_transaction
-    assert txn.account_id == "acct-1"
+    # SDK parses account_id into a uuid.UUID; compare by string value.
+    assert str(txn.account_id) == _uuid("acct-1")
     assert txn.amount == -15990
     assert txn.payee_name == "Netflix"
     assert txn.frequency == "monthly"
@@ -2047,7 +2065,9 @@ async def test_create_scheduled_transaction_uses_start_date(
         scheduled_transaction=created
     )
 
-    await server.create_scheduled_transaction("b-1", "acct-1", -1500.00, start_date="2026-06-01")
+    await server.create_scheduled_transaction(
+        "b-1", _uuid("acct-1"), -1500.00, start_date="2026-06-01"
+    )
 
     call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
     _, wrapper = call.args
@@ -2070,7 +2090,7 @@ async def test_create_scheduled_transaction_defaults_to_today(
         scheduled_transaction=created
     )
 
-    await server.create_scheduled_transaction("b-1", "acct-1", -50.00)
+    await server.create_scheduled_transaction("b-1", _uuid("acct-1"), -50.00)
 
     call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
     _, wrapper = call.args
@@ -2378,7 +2398,7 @@ async def test_resolve_budget_id_returns_preferred_when_set(
     result = await server._resolve_budget_id(client=object(), ctx=None)
 
     assert result == "preferred-b"
-    mock_ynab_apis.budgets.get_budgets.assert_not_called()
+    mock_ynab_apis.budgets.get_plans.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2389,8 +2409,8 @@ async def test_resolve_budget_id_short_circuits_single_budget(
 
     isolated = YNABResources(config_dir=tmp_path)
     monkeypatch.setattr(server, "ynab_resources", isolated)
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("only-b", "Only Budget")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("only-b", "Only Budget")]
     )
 
     ctx = _FakeContext(_accept(index=1))
@@ -2407,7 +2427,7 @@ async def test_resolve_budget_id_raises_when_no_budgets(
     from mcp_ynab.server import YNABResources
 
     monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(budgets=[])
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(plans=[])
 
     with pytest.raises(ValueError, match="No YNAB budgets"):
         await server._resolve_budget_id(client=object(), ctx=None)
@@ -2421,8 +2441,8 @@ async def test_resolve_budget_id_raises_when_multiple_and_no_ctx(
     from mcp_ynab.server import YNABResources
 
     monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
     )
 
     with pytest.raises(ValueError, match="no preferred budget"):
@@ -2437,8 +2457,8 @@ async def test_resolve_budget_id_elicits_and_returns_chosen(
 
     isolated = YNABResources(config_dir=tmp_path)
     monkeypatch.setattr(server, "ynab_resources", isolated)
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("first-b", "Personal"), _budget_mock("second-b", "Work")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("first-b", "Personal"), _budget_mock("second-b", "Work")]
     )
 
     ctx = _FakeContext(_accept(index=2))
@@ -2459,8 +2479,8 @@ async def test_resolve_budget_id_persists_preference_when_requested(
 
     isolated = YNABResources(config_dir=tmp_path)
     monkeypatch.setattr(server, "ynab_resources", isolated)
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
     )
 
     ctx = _FakeContext(_accept(index=1, set_as_preferred=True))
@@ -2470,6 +2490,108 @@ async def test_resolve_budget_id_persists_preference_when_requested(
     assert isolated.get_preferred_budget_id() == "a-b"
 
 
+# ---------------------------------------------------------------------------
+# ynab >=2.x UUID coercion regressions
+#
+# These push real ``uuid.UUID`` objects through the production paths that the
+# str-based mocks above cannot exercise. PlanSummary.id / Category.id /
+# Payee.id became uuid.UUID at the 2.0.0 SDK bump; the code must keep returning
+# / storing plain ``str`` (prefs + caches are JSON/str-typed).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_coerces_uuid_id_to_str(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    bid = uuid.uuid4()
+    budget = MagicMock()
+    budget.id = bid
+    budget.name = "Personal"
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(plans=[budget])
+
+    result = await server._resolve_budget_id(client=object(), ctx=None)
+
+    assert isinstance(result, str)
+    assert result == str(bid)
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_persists_uuid_preference_as_str(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    chosen_id = uuid.uuid4()
+    chosen = MagicMock()
+    chosen.id = chosen_id
+    chosen.name = "Work"
+    other = MagicMock()
+    other.id = uuid.uuid4()
+    other.name = "Personal"
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(plans=[other, chosen])
+
+    ctx = _FakeContext(_accept(index=2, set_as_preferred=True))
+    result = await server._resolve_budget_id(client=object(), ctx=ctx)
+
+    assert result == str(chosen_id)
+    stored = isolated.get_preferred_budget_id()
+    # default_budget_id is a str field on Preferences; a raw UUID would not
+    # round-trip through the JSON prefs store or the str-keyed cache.
+    assert isinstance(stored, str)
+    assert stored == str(chosen_id)
+
+
+def test_process_category_data_coerces_uuid_id_to_str() -> None:
+    from ynab.models.category import Category
+
+    from mcp_ynab.formatters import _process_category_data
+
+    cat = Category.model_construct(
+        id=uuid.uuid4(),
+        category_group_id=uuid.uuid4(),
+        name="Groceries",
+        budgeted=1000,
+        activity=-500,
+    )
+    cat_id, name, _budgeted, _activity = _process_category_data(cat)
+
+    assert isinstance(cat_id, str)
+    assert cat_id == str(cat.id)
+    assert name == "Groceries"
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_caches_uuid_ids_as_str(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.resources import list_payees_resource
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    pid = uuid.uuid4()
+    payee = MagicMock()
+    payee.id = pid
+    payee.name = "Trader Joe's"
+    payee.transfer_account_id = None
+    payee.deleted = False
+    mock_ynab_apis.payees.get_payees.return_value = _resp(payees=[payee])
+
+    # Must not raise: the cache writer uses plain json.dump, which a raw
+    # uuid.UUID would break.
+    result = await list_payees_resource("b-1")
+
+    records = isolated.get_cached_payee_records("b-1")
+    assert records == [{"id": str(pid), "name": "Trader Joe's", "transfer_account_id": None}]
+    assert "Trader Joe's" in result[0].text
+
+
 @pytest.mark.asyncio
 async def test_resolve_budget_id_raises_on_decline(
     mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -2477,8 +2599,8 @@ async def test_resolve_budget_id_raises_on_decline(
     from mcp_ynab.server import YNABResources
 
     monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
     )
 
     ctx = _FakeContext(SimpleNamespace(action="decline"))
@@ -2493,8 +2615,8 @@ async def test_resolve_budget_id_raises_on_cancel(
     from mcp_ynab.server import YNABResources
 
     monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
     )
 
     ctx = _FakeContext(SimpleNamespace(action="cancel"))
@@ -2509,8 +2631,8 @@ async def test_resolve_budget_id_raises_on_out_of_range_index(
     from mcp_ynab.server import YNABResources
 
     monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("a-b", "A"), _budget_mock("b-b", "B")]
     )
 
     ctx = _FakeContext(_accept(index=99))
@@ -2526,8 +2648,8 @@ async def test_create_transaction_elicits_when_multiple_budgets(
     from mcp_ynab.server import YNABResources
 
     monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("first-b", "A"), _budget_mock("second-b", "B")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("first-b", "A"), _budget_mock("second-b", "B")]
     )
     created_txn = MagicMock()
     created_txn.to_dict.return_value = {"id": "new-txn"}
@@ -2535,7 +2657,7 @@ async def test_create_transaction_elicits_when_multiple_budgets(
 
     ctx = _FakeContext(_accept(index=2))
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=10.0,
         payee_name="Test",
         confirm=False,
@@ -2554,8 +2676,8 @@ async def test_get_account_balance_elicits_when_multiple_budgets(
     from mcp_ynab.server import YNABResources
 
     monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
-    mock_ynab_apis.budgets.get_budgets.return_value = _resp(
-        budgets=[_budget_mock("first-b", "A"), _budget_mock("second-b", "B")]
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(
+        plans=[_budget_mock("first-b", "A"), _budget_mock("second-b", "B")]
     )
     mock_ynab_apis.accounts.get_account_by_id.return_value = _resp(
         account=SimpleNamespace(balance=50_000)
@@ -2775,17 +2897,17 @@ async def test_create_transaction_elicits_category_when_ambiguous(
         "b-1",
         [
             {"id": "c-a", "name": "Groceries 🛒", "category_group_name": "Food"},
-            {"id": "c-b", "name": "Groceries (Household)", "category_group_name": "Bills"},
+            {"id": _uuid("c-b"), "name": "Groceries (Household)", "category_group_name": "Bills"},
         ],
     )
     monkeypatch.setattr(server, "ynab_resources", isolated)
     mock_ynab_apis.transactions.create_transaction.return_value = _resp(
-        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-1", "category_id": "c-b"})
+        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-1", "category_id": _uuid("c-b")})
     )
     ctx = _FakeContext(_accept_category(index=2))
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=12.34,
         payee_name="Trader Joe's",
         category_name="groceries",
@@ -2793,11 +2915,11 @@ async def test_create_transaction_elicits_category_when_ambiguous(
         ctx=ctx,
     )
 
-    assert result == {"id": "t-1", "category_id": "c-b"}
+    assert result == {"id": "t-1", "category_id": _uuid("c-b")}
     # The wrapper passed to YNAB carried our chosen category_id.
     args, _ = mock_ynab_apis.transactions.create_transaction.call_args
     wrapper = args[1]
-    assert wrapper.transaction.category_id == "c-b"
+    assert str(wrapper.transaction.category_id) == _uuid("c-b")
 
 
 # ---------------------------------------------------------------------------
@@ -2886,7 +3008,7 @@ async def test_create_transaction_skips_confirmation_when_no_ctx(
     )
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=5.0,
         payee_name="Cafe",
     )
@@ -2911,7 +3033,7 @@ async def test_create_transaction_skips_confirmation_when_confirm_false(
     ctx = _QueuedFakeContext([])  # would raise if any elicit happened
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=5.0,
         payee_name="Cafe",
         confirm=False,
@@ -2940,7 +3062,7 @@ async def test_create_transaction_skips_confirmation_when_pref_disabled(
     ctx = _QueuedFakeContext([])  # would raise if any elicit happened
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=-10.0,
         payee_name="Bookstore",
         confirm=True,  # per-call confirm=True, but preference overrides
@@ -2963,7 +3085,7 @@ async def test_create_transaction_posts_after_confirmation_accepted(
     isolated.set_preferred_budget_id("b-1")
     isolated.cache_categories(
         "b-1",
-        [{"id": "c-food", "name": "Groceries", "category_group_name": "Food"}],
+        [{"id": _uuid("c-food"), "name": "Groceries", "category_group_name": "Food"}],
     )
     monkeypatch.setattr(server, "ynab_resources", isolated)
     mock_ynab_apis.transactions.create_transaction.return_value = _resp(
@@ -2972,7 +3094,7 @@ async def test_create_transaction_posts_after_confirmation_accepted(
     ctx = _QueuedFakeContext([_accept_confirm(True)])
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=-12.34,
         payee_name="Trader Joe's",
         category_name="Groceries",
@@ -3002,7 +3124,7 @@ async def test_create_transaction_returns_cancelled_when_confirm_field_false(
     ctx = _QueuedFakeContext([_accept_confirm(False)])
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=10.0,
         payee_name="Cafe",
         ctx=ctx,
@@ -3025,7 +3147,7 @@ async def test_create_transaction_returns_cancelled_on_decline(
     ctx = _QueuedFakeContext([SimpleNamespace(action="decline", data=None)])
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=10.0,
         payee_name="Cafe",
         ctx=ctx,
@@ -3048,7 +3170,7 @@ async def test_create_transaction_returns_cancelled_on_cancel(
     ctx = _QueuedFakeContext([SimpleNamespace(action="cancel", data=None)])
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=10.0,
         payee_name="Cafe",
         ctx=ctx,
@@ -3071,24 +3193,24 @@ async def test_create_transaction_chains_category_then_confirmation(
         "b-1",
         [
             {"id": "c-a", "name": "Groceries 🛒", "category_group_name": "Food"},
-            {"id": "c-b", "name": "Groceries (Household)", "category_group_name": "Bills"},
+            {"id": _uuid("c-b"), "name": "Groceries (Household)", "category_group_name": "Bills"},
         ],
     )
     monkeypatch.setattr(server, "ynab_resources", isolated)
     mock_ynab_apis.transactions.create_transaction.return_value = _resp(
-        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-1", "category_id": "c-b"})
+        transaction=SimpleNamespace(to_dict=lambda: {"id": "t-1", "category_id": _uuid("c-b")})
     )
     ctx = _QueuedFakeContext([_accept_category(index=2), _accept_confirm(True)])
 
     result = await server.create_transaction(
-        account_id="acct-1",
+        account_id=_uuid("acct-1"),
         amount=-25.0,
         payee_name="Target",
         category_name="groceries",
         ctx=ctx,
     )
 
-    assert result == {"id": "t-1", "category_id": "c-b"}
+    assert result == {"id": "t-1", "category_id": _uuid("c-b")}
     schemas = [c[1] for c in ctx.calls]
     assert schemas == [server._CategoryChoice, server._PostConfirmation]
     # Confirmation message reflects the *chosen* category, not the user's input.

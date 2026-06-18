@@ -83,9 +83,9 @@ def _currency_iso(currency_format: object) -> str:
 async def list_budgets_resource() -> list[types.TextContent]:
     """List all (non-closed/non-deleted) budgets as a markdown table."""
     async with await _s.get_ynab_client() as client:
-        budgets_api = _s.BudgetsApi(client)
-        response = budgets_api.get_budgets()
-        budgets = response.data.budgets or []
+        plans_api = _s.PlansApi(client)
+        response = plans_api.get_plans()
+        budgets = response.data.plans or []
 
         active = [
             b
@@ -230,7 +230,9 @@ async def list_payees_resource(budget_id: str) -> list[types.TextContent]:
     active = [p for p in payees if not getattr(p, "deleted", False)]
     raw = [
         {
-            "id": getattr(p, "id", None),
+            # Payee.id is a uuid.UUID in ynab >=2.x; coerce to str so the cache
+            # stays JSON-serializable (the cache writer uses plain json.dump).
+            "id": str(p.id) if getattr(p, "id", None) is not None else None,
             "name": getattr(p, "name", None),
             "transfer_account_id": getattr(p, "transfer_account_id", None),
         }
@@ -255,7 +257,7 @@ async def _fetch_month_text(budget_id: str, month: str) -> list[types.TextConten
     """Fetch a month snapshot and return it as a single TextContent block."""
     async with await _s.get_ynab_client() as client:
         months_api = _s.MonthsApi(client)
-        response = months_api.get_budget_month(budget_id, _resolve_month(month))
+        response = months_api.get_plan_month(budget_id, _resolve_month(month))
         return [types.TextContent(type="text", text=_render_month_markdown(response.data.month))]
 
 

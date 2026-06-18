@@ -61,10 +61,15 @@ def _save_json_file(filename: str | Path, data: Dict[str, Any]) -> None:
 
 
 def _atomic_write_json(filename: Path, data: Dict[str, Any]) -> None:
-    """Write JSON to ``filename`` atomically via a sibling tempfile + os.replace."""
+    """Write JSON to ``filename`` atomically via a sibling tempfile + os.replace.
+
+    ``default=str`` coerces non-JSON-native values (notably ``uuid.UUID`` ids
+    from ynab >=2.x ``Category.to_dict()``, which ``json.dump`` would otherwise
+    reject) to their string form — cache records are str-compared on read.
+    """
     tmp = filename.with_suffix(filename.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f, indent=2, default=str)
     os.replace(tmp, filename)
 
 

@@ -23,7 +23,7 @@ classifiers = [
 dependencies = [
   "mcp[cli]>=1.20.0,<2.0.0",
   "pydantic>=2.10.0,<3",
-  "ynab>=1.0.1,<2.0.0",
+  "ynab>=4.1.0,<5.0.0",
   "python-dotenv>=1.2.2",
   "keyring>=25.7.0",
 ]
@@ -64,6 +64,9 @@ dev = [
   "ruff>=0.9.4",
   "mypy>=1.15.0",
   "interrogate>=1.7.0",
+  # Drives the LLM-eval integration tests (tests/integration/test_llm_evals.py).
+  "anthropic>=0.40.0",
+  "claude-agent-sdk>=0.2.104",
 ]
 
 [tool.interrogate]
@@ -80,6 +83,7 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
   "integration: marks tests as integration tests that require YNAB API access",
+  "eval: LLM-driven evals — require ANTHROPIC_API_KEY + YNAB_API_KEY and cost API tokens (also marked integration)",
   "asyncio: mark tests as async tests",
 ]
 addopts = "-v -ra --strict-markers -m 'not integration'"

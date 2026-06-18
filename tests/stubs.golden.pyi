@@ -268,8 +268,11 @@ class WriteNamespace:
         name: str | None = ...,
         note: str | None = ...,
         category_group_id: str | None = ...,
+        goal_target: float | None = ...,
+        goal_target_date: str | None = ...,
+        goal_needs_whole_amount: bool | None = ...,
     ) -> str:
-        """Rename a category, update its note, or move it to a different category group."""
+        """Rename a category, edit its note/group, or set its recurring monthly goal."""
         ...
 
     async def update_transaction(

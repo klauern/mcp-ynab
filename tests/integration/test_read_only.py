@@ -106,7 +106,7 @@ async def test_get_month_renders_snapshot_for_latest_populated_month(
 
     cfg = Configuration(access_token=os.environ["YNAB_API_KEY"])
     with ApiClient(cfg) as raw_client:
-        months = MonthsApi(raw_client).get_budget_months(integration_first_budget_id).data.months
+        months = MonthsApi(raw_client).get_plan_months(integration_first_budget_id).data.months
     if not months:
         pytest.skip("Budget has no month data")
     latest_iso = months[0].month.isoformat()

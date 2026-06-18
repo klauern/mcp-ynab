@@ -2,7 +2,7 @@
 
 `create_transaction`, `get_transactions`, `get_transactions_needing_attention`,
 `categorize_transaction`, `bulk_categorize`, and `update_transaction`. SDK
-API classes (`TransactionsApi`, `BudgetsApi`, `AccountsApi`,
+API classes (`TransactionsApi`, `PlansApi`, `AccountsApi`,
 `CategoriesApi`), `ExistingTransaction`, `PutTransactionWrapper`, and
 `ynab_resources` are looked up via the `server` module so test
 monkeypatches propagate.

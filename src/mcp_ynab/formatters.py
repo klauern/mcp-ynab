@@ -47,6 +47,9 @@ def _build_markdown_table(
     if not rows:
         return _get_empty_table(headers)
 
+    # Cells are display data — coerce to str so non-str values (e.g. uuid.UUID
+    # ids from ynab >=2.x response models) don't break len()/format below.
+    rows = [[str(cell) for cell in row] for row in rows]
     alignments = alignments if alignments is not None else ["left"] * len(headers)
     col_count = len(headers)
     widths = _get_column_widths(headers, rows, col_count)
@@ -148,7 +151,7 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _process_category_data(category: Category | Dict[str, Any]) -> tuple[str, str, float, float]:
     """Process category data and return tuple of (id, name, budgeted, activity)."""
     if isinstance(category, Category):
-        return category.id, category.name, category.budgeted, category.activity
+        return str(category.id), category.name, category.budgeted, category.activity
     cat_dict = cast(Dict[str, Any], category)
     return cat_dict["id"], cat_dict["name"], cat_dict["budgeted"], cat_dict["activity"]
 

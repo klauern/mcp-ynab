@@ -2490,6 +2490,108 @@ async def test_resolve_budget_id_persists_preference_when_requested(
     assert isolated.get_preferred_budget_id() == "a-b"
 
 
+# ---------------------------------------------------------------------------
+# ynab >=2.x UUID coercion regressions
+#
+# These push real ``uuid.UUID`` objects through the production paths that the
+# str-based mocks above cannot exercise. PlanSummary.id / Category.id /
+# Payee.id became uuid.UUID at the 2.0.0 SDK bump; the code must keep returning
+# / storing plain ``str`` (prefs + caches are JSON/str-typed).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_coerces_uuid_id_to_str(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    monkeypatch.setattr(server, "ynab_resources", YNABResources(config_dir=tmp_path))
+    bid = uuid.uuid4()
+    budget = MagicMock()
+    budget.id = bid
+    budget.name = "Personal"
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(plans=[budget])
+
+    result = await server._resolve_budget_id(client=object(), ctx=None)
+
+    assert isinstance(result, str)
+    assert result == str(bid)
+
+
+@pytest.mark.asyncio
+async def test_resolve_budget_id_persists_uuid_preference_as_str(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    chosen_id = uuid.uuid4()
+    chosen = MagicMock()
+    chosen.id = chosen_id
+    chosen.name = "Work"
+    other = MagicMock()
+    other.id = uuid.uuid4()
+    other.name = "Personal"
+    mock_ynab_apis.budgets.get_plans.return_value = _resp(plans=[other, chosen])
+
+    ctx = _FakeContext(_accept(index=2, set_as_preferred=True))
+    result = await server._resolve_budget_id(client=object(), ctx=ctx)
+
+    assert result == str(chosen_id)
+    stored = isolated.get_preferred_budget_id()
+    # default_budget_id is a str field on Preferences; a raw UUID would not
+    # round-trip through the JSON prefs store or the str-keyed cache.
+    assert isinstance(stored, str)
+    assert stored == str(chosen_id)
+
+
+def test_process_category_data_coerces_uuid_id_to_str() -> None:
+    from ynab.models.category import Category
+
+    from mcp_ynab.formatters import _process_category_data
+
+    cat = Category.model_construct(
+        id=uuid.uuid4(),
+        category_group_id=uuid.uuid4(),
+        name="Groceries",
+        budgeted=1000,
+        activity=-500,
+    )
+    cat_id, name, _budgeted, _activity = _process_category_data(cat)
+
+    assert isinstance(cat_id, str)
+    assert cat_id == str(cat.id)
+    assert name == "Groceries"
+
+
+@pytest.mark.asyncio
+async def test_list_payees_resource_caches_uuid_ids_as_str(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from mcp_ynab.resources import list_payees_resource
+    from mcp_ynab.server import YNABResources
+
+    isolated = YNABResources(config_dir=tmp_path)
+    monkeypatch.setattr(server, "ynab_resources", isolated)
+    pid = uuid.uuid4()
+    payee = MagicMock()
+    payee.id = pid
+    payee.name = "Trader Joe's"
+    payee.transfer_account_id = None
+    payee.deleted = False
+    mock_ynab_apis.payees.get_payees.return_value = _resp(payees=[payee])
+
+    # Must not raise: the cache writer uses plain json.dump, which a raw
+    # uuid.UUID would break.
+    result = await list_payees_resource("b-1")
+
+    records = isolated.get_cached_payee_records("b-1")
+    assert records == [{"id": str(pid), "name": "Trader Joe's", "transfer_account_id": None}]
+    assert "Trader Joe's" in result[0].text
+
+
 @pytest.mark.asyncio
 async def test_resolve_budget_id_raises_on_decline(
     mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path

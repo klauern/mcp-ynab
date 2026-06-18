@@ -230,7 +230,9 @@ async def list_payees_resource(budget_id: str) -> list[types.TextContent]:
     active = [p for p in payees if not getattr(p, "deleted", False)]
     raw = [
         {
-            "id": getattr(p, "id", None),
+            # Payee.id is a uuid.UUID in ynab >=2.x; coerce to str so the cache
+            # stays JSON-serializable (the cache writer uses plain json.dump).
+            "id": str(p.id) if getattr(p, "id", None) is not None else None,
             "name": getattr(p, "name", None),
             "transfer_account_id": getattr(p, "transfer_account_id", None),
         }

@@ -47,6 +47,9 @@ def _build_markdown_table(
     if not rows:
         return _get_empty_table(headers)
 
+    # Cells are display data — coerce to str so non-str values (e.g. uuid.UUID
+    # ids from ynab >=2.x response models) don't break len()/format below.
+    rows = [[str(cell) for cell in row] for row in rows]
     alignments = alignments if alignments is not None else ["left"] * len(headers)
     col_count = len(headers)
     widths = _get_column_widths(headers, rows, col_count)

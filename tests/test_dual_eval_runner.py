@@ -12,12 +12,14 @@ import pytest  # noqa: F401  # used by tmp_path fixture type hints
 
 # Import from the evals/ package (run_dual_eval module inside evals/ directory).
 from evals.run_dual_eval import (
+    CONFIGS,
+    YNAB_CODE_MODE_TOOLS,
     build_timing_summary,
     eval_output_dir,
     next_iteration_dir,
     run_to_dict,
 )
-from tests.integration._llm_eval_harness import EvalRun, ToolCall
+from tests.integration._llm_eval_harness import EvalRun, ToolCall, YNAB_WRITE_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +169,48 @@ def test_build_timing_summary_empty() -> None:
     assert summary["duration_ms"] == 0.0
     assert summary["total_duration_seconds"] == 0.0
     assert summary["evals"] == {}
+
+
+# ---------------------------------------------------------------------------
+# CONFIGS: tool blocking
+# ---------------------------------------------------------------------------
+
+
+def test_direct_tools_config_blocks_write_tools() -> None:
+    """direct_tools config must block all YNAB write tools."""
+    cfg = next(c for c in CONFIGS if c["name"] == "direct_tools")
+    assert YNAB_WRITE_TOOLS <= cfg["blocked_tool_names"]
+
+
+def test_direct_tools_config_blocks_code_mode_tools() -> None:
+    """direct_tools config must block code-mode tools (execute/search) to avoid wasted iterations."""
+    cfg = next(c for c in CONFIGS if c["name"] == "direct_tools")
+    assert YNAB_CODE_MODE_TOOLS <= cfg["blocked_tool_names"]
+
+
+def test_code_mode_config_does_not_block_code_mode_tools() -> None:
+    """code_mode config must NOT block execute/search."""
+    cfg = next(c for c in CONFIGS if c["name"] == "code_mode")
+    assert not (YNAB_CODE_MODE_TOOLS & cfg["blocked_tool_names"])
+
+
+# ---------------------------------------------------------------------------
+# --task-ids: integer/string normalization
+# ---------------------------------------------------------------------------
+
+
+def test_task_id_filter_matches_integer_ids() -> None:
+    """Filtering by string '1' must match a task with integer id=1."""
+    tasks = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+    wanted = {"1"}
+    filtered = [t for t in tasks if str(t["id"]).strip() in wanted]
+    assert len(filtered) == 1
+    assert filtered[0]["id"] == 1
+
+
+def test_task_id_filter_trims_whitespace() -> None:
+    """Whitespace around task IDs in --task-ids is stripped."""
+    tasks = [{"id": 3, "name": "c"}]
+    wanted = {s.strip() for s in " 3 , 4 ".split(",")}
+    filtered = [t for t in tasks if str(t["id"]).strip() in wanted]
+    assert len(filtered) == 1

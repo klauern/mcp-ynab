@@ -52,12 +52,17 @@ from tests.integration._llm_eval_harness import (  # noqa: E402
     DEFAULT_EVAL_MODEL,
     DIRECT_TOOLS_SYSTEM,
     EvalRun,
+    current_driver,
     drive_prompt,
     YNAB_WRITE_TOOLS,
 )
 
 EVALS_PATH = Path(__file__).resolve().parent / "evals.json"
 DEFAULT_WORKSPACE = Path(__file__).resolve().parent / "workspace"
+
+# Tools only present (and functional) when code mode is enabled; block them
+# from the direct-tools surface so the model doesn't waste iterations on errors.
+YNAB_CODE_MODE_TOOLS = frozenset({"execute", "search"})
 
 # Config A — Code Mode with tool replacement, mutations blocked (read-only).
 CODE_MODE_ENV: dict[str, str] = {
@@ -83,7 +88,7 @@ CONFIGS: list[dict[str, Any]] = [
         "name": "direct_tools",
         "env": DIRECT_TOOLS_ENV,
         "system_prompt": DIRECT_TOOLS_SYSTEM,
-        "blocked_tool_names": YNAB_WRITE_TOOLS,
+        "blocked_tool_names": YNAB_WRITE_TOOLS | YNAB_CODE_MODE_TOOLS,
     },
 ]
 
@@ -287,10 +292,20 @@ def main() -> None:
     args = _parse_args()
     _require_keys()
 
+    if current_driver() == "agent-sdk":
+        print(
+            "ERROR: EVAL_DRIVER=agent-sdk is not supported by the dual-config runner. "
+            "The agent-sdk path drops system_prompt, server_env_overrides, blocked_tool_names, "
+            "and max_iterations, so both configs would run identically in code-mode. "
+            "Unset EVAL_DRIVER or set EVAL_DRIVER=messages-api.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     tasks = load_evals(EVALS_PATH)
     if args.task_ids:
-        wanted = set(args.task_ids.split(","))
-        tasks = [t for t in tasks if t["id"] in wanted]
+        wanted = {s.strip() for s in args.task_ids.split(",")}
+        tasks = [t for t in tasks if str(t["id"]).strip() in wanted]
         if not tasks:
             print(f"ERROR: no tasks matched --task-ids {args.task_ids!r}", file=sys.stderr)
             sys.exit(1)

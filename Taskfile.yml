@@ -45,6 +45,11 @@ tasks:
     cmds:
       - uv run pytest -m "eval"
 
+  eval:dual:
+    desc: "Run dual-config benchmark (Code Mode vs direct-tools) — needs YNAB_API_KEY + EVAL_ANTHROPIC_API_KEY"
+    cmds:
+      - uv run python evals/run_dual_eval.py {{.CLI_ARGS}}
+
   test:integration:
     desc: "Run the integration tests (excludes the costly LLM evals)"
     cmds:

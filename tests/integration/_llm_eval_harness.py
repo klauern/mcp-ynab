@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,6 +56,17 @@ CODE_MODE_SYSTEM = (
     "`await ynab.read.<operation>(...)` and `return` the value you want back.\n\n"
     "Resolve ids (budget, category, account) by reading them rather than guessing. "
     "The environment is read-only: `ynab.write.*` is unavailable, so for any change "
+    "request, gather the relevant data and describe what you would do — do not attempt "
+    "to apply it. When done, give the user a clear final answer in plain language."
+)
+
+# Orient the model for direct-tools mode: all YNAB tools are visible as flat MCP
+# tools. Same read-only + describe-only posture as Code Mode — mutations are
+# blocked at the structural-check layer so no real writes can sneak through.
+DIRECT_TOOLS_SYSTEM = (
+    "You operate a YNAB budget through direct MCP tools. Use the available read tools "
+    "to answer questions about the budget. Resolve ids (budget, category, account) by "
+    "reading them rather than guessing. The environment is read-only: for any change "
     "request, gather the relevant data and describe what you would do — do not attempt "
     "to apply it. When done, give the user a clear final answer in plain language."
 )
@@ -99,11 +111,18 @@ class EvalRun:
     final_text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     stopped_early: bool = False
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    duration_ms: float = 0.0
 
     @property
     def tool_names(self) -> list[str]:
         """Names of every tool Claude called, in order."""
         return [tc.name for tc in self.tool_calls]
+
+    @property
+    def total_tokens(self) -> int:
+        return self.total_input_tokens + self.total_output_tokens
 
 
 def mcp_tools_to_anthropic(mcp_tools: list[Any]) -> list[dict[str, Any]]:
@@ -171,7 +190,7 @@ def _anthropic_client() -> Any:
     return anthropic.AsyncAnthropic(api_key=eval_api_key())
 
 
-def _server_params() -> Any:
+def _server_params(*, server_env_overrides: dict[str, str] | None = None) -> Any:
     """Build StdioServerParameters for launching the mcp-ynab subprocess.
 
     Defaults to ``<this interpreter> -m mcp_ynab`` so the eval always exercises
@@ -179,40 +198,82 @@ def _server_params() -> Any:
     checked-out branch) rather than a globally installed mcp-ynab. Override via
     EVAL_MCP_COMMAND / EVAL_MCP_ARGS (JSON list) to point at a different build —
     e.g. EVAL_MCP_COMMAND=mcp-ynab EVAL_MCP_ARGS='[]' for the installed tool.
+    ``server_env_overrides`` are layered on top of the current environment so
+    callers can inject ``MCP_YNAB_*`` preference vars without a config file.
     """
     from mcp import StdioServerParameters
 
     command = os.getenv("EVAL_MCP_COMMAND", sys.executable)
     args = json.loads(os.getenv("EVAL_MCP_ARGS", '["-m", "mcp_ynab"]'))
-    return StdioServerParameters(command=command, args=args, env=dict(os.environ))
+    env = dict(os.environ)
+    if server_env_overrides:
+        env.update(server_env_overrides)
+    return StdioServerParameters(command=command, args=args, env=env)
 
 
-async def drive_prompt(prompt: str, *, model: str, max_iterations: int = 8) -> EvalRun:
+async def drive_prompt(
+    prompt: str,
+    *,
+    model: str,
+    max_iterations: int = 8,
+    system_prompt: str | None = None,
+    server_env_overrides: dict[str, str] | None = None,
+    blocked_tool_names: frozenset[str] | None = None,
+) -> EvalRun:
     """Drive ``prompt`` to a final answer using the live mcp-ynab tools.
 
     Dispatches to the configured backend (EVAL_DRIVER). Both return an EvalRun
     with the same shape so the structural checks and judge work identically.
+
+    ``system_prompt`` overrides the default CODE_MODE_SYSTEM so the dual-config
+    runner can orient the model appropriately for each surface.
+    ``server_env_overrides`` are forwarded to the subprocess so the server
+    launches with a specific ``MCP_YNAB_*`` configuration.
+    ``blocked_tool_names`` removes unsafe tools from the model-visible schema and
+    fail-closes if a blocked tool is somehow requested.
     """
     driver = current_driver()
     if driver == "agent-sdk":
         return await _drive_via_agent_sdk(prompt, model=model)
     if driver == "messages-api":
-        return await _drive_via_messages_api(prompt, model=model, max_iterations=max_iterations)
+        return await _drive_via_messages_api(
+            prompt,
+            model=model,
+            max_iterations=max_iterations,
+            system_prompt=system_prompt,
+            server_env_overrides=server_env_overrides,
+            blocked_tool_names=blocked_tool_names,
+        )
     raise ValueError(f"Unknown EVAL_DRIVER {driver!r} (use 'messages-api' or 'agent-sdk').")
 
 
-async def _drive_via_messages_api(prompt: str, *, model: str, max_iterations: int = 8) -> EvalRun:
+async def _drive_via_messages_api(
+    prompt: str,
+    *,
+    model: str,
+    max_iterations: int = 8,
+    system_prompt: str | None = None,
+    server_env_overrides: dict[str, str] | None = None,
+    blocked_tool_names: frozenset[str] | None = None,
+) -> EvalRun:
     """Drive ``prompt`` with the anthropic Messages API (bills API tokens)."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
     client = _anthropic_client()
     run = EvalRun()
+    effective_system = system_prompt if system_prompt is not None else CODE_MODE_SYSTEM
 
-    async with stdio_client(_server_params()) as (read, write):
+    t0 = time.monotonic()
+    async with stdio_client(_server_params(server_env_overrides=server_env_overrides)) as (
+        read,
+        write,
+    ):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = (await session.list_tools()).tools
+            if blocked_tool_names:
+                tools = [tool for tool in tools if tool.name not in blocked_tool_names]
             anthropic_tools = mcp_tools_to_anthropic(tools)
 
             messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
@@ -220,12 +281,16 @@ async def _drive_via_messages_api(prompt: str, *, model: str, max_iterations: in
                 response = await client.messages.create(
                     model=model,
                     max_tokens=2048,
-                    system=CODE_MODE_SYSTEM,
+                    system=effective_system,
                     tools=anthropic_tools,
                     messages=messages,
                 )
+                if hasattr(response, "usage") and response.usage:
+                    run.total_input_tokens += getattr(response.usage, "input_tokens", 0)
+                    run.total_output_tokens += getattr(response.usage, "output_tokens", 0)
                 if response.stop_reason != "tool_use":
                     run.final_text = "".join(b.text for b in response.content if b.type == "text")
+                    run.duration_ms = (time.monotonic() - t0) * 1000
                     return run
 
                 messages.append(
@@ -236,6 +301,16 @@ async def _drive_via_messages_api(prompt: str, *, model: str, max_iterations: in
                     if block.type != "tool_use":
                         continue
                     run.tool_calls.append(ToolCall(block.name, dict(block.input)))
+                    if blocked_tool_names and block.name in blocked_tool_names:
+                        content = f"ERROR calling {block.name}: tool is disabled for this eval run"
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": content,
+                            }
+                        )
+                        continue
                     try:
                         result = await session.call_tool(block.name, dict(block.input))
                         content = tool_result_to_text(result) or "(no content)"
@@ -251,6 +326,7 @@ async def _drive_via_messages_api(prompt: str, *, model: str, max_iterations: in
                 messages.append({"role": "user", "content": tool_results})
 
     run.stopped_early = True
+    run.duration_ms = (time.monotonic() - t0) * 1000
     return run
 
 

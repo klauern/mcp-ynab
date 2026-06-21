@@ -53,6 +53,7 @@ from tests.integration._llm_eval_harness import (  # noqa: E402
     DIRECT_TOOLS_SYSTEM,
     EvalRun,
     drive_prompt,
+    YNAB_WRITE_TOOLS,
 )
 
 EVALS_PATH = Path(__file__).resolve().parent / "evals.json"
@@ -65,7 +66,7 @@ CODE_MODE_ENV: dict[str, str] = {
     "MCP_YNAB_CODE_MODE_MUTATIONS_ENABLED": "false",
 }
 
-# Config B — Direct tools: full YNAB tool set visible, code mode off.
+# Config B — Direct tools: read-only YNAB tool set visible, code mode off.
 DIRECT_TOOLS_ENV: dict[str, str] = {
     "MCP_YNAB_CODE_MODE_ENABLED": "false",
     "MCP_YNAB_CODE_MODE_REPLACE_TOOLS": "false",
@@ -76,11 +77,13 @@ CONFIGS: list[dict[str, Any]] = [
         "name": "code_mode",
         "env": CODE_MODE_ENV,
         "system_prompt": CODE_MODE_SYSTEM,
+        "blocked_tool_names": frozenset(),
     },
     {
         "name": "direct_tools",
         "env": DIRECT_TOOLS_ENV,
         "system_prompt": DIRECT_TOOLS_SYSTEM,
+        "blocked_tool_names": YNAB_WRITE_TOOLS,
     },
 ]
 
@@ -198,6 +201,7 @@ async def run_eval_dual(
             max_iterations=max_iterations,
             system_prompt=cfg["system_prompt"],
             server_env_overrides=cfg["env"],
+            blocked_tool_names=cfg["blocked_tool_names"],
         )
 
     runs = await asyncio.gather(*[_run_config(cfg) for cfg in CONFIGS])
@@ -217,7 +221,7 @@ async def run_all(
     results: dict[str, dict[str, EvalRun]] = {}
 
     for task in tasks:
-        task_id = task["id"]
+        task_id = str(task["id"])
         print(f"  [{task_id}] {task['name']} ...", end=" ", flush=True)
         config_runs = await run_eval_dual(task, model=model, max_iterations=max_iterations)
         results[task_id] = config_runs

@@ -218,6 +218,7 @@ async def drive_prompt(
     max_iterations: int = 8,
     system_prompt: str | None = None,
     server_env_overrides: dict[str, str] | None = None,
+    blocked_tool_names: frozenset[str] | None = None,
 ) -> EvalRun:
     """Drive ``prompt`` to a final answer using the live mcp-ynab tools.
 
@@ -228,6 +229,8 @@ async def drive_prompt(
     runner can orient the model appropriately for each surface.
     ``server_env_overrides`` are forwarded to the subprocess so the server
     launches with a specific ``MCP_YNAB_*`` configuration.
+    ``blocked_tool_names`` removes unsafe tools from the model-visible schema and
+    fail-closes if a blocked tool is somehow requested.
     """
     driver = current_driver()
     if driver == "agent-sdk":
@@ -239,6 +242,7 @@ async def drive_prompt(
             max_iterations=max_iterations,
             system_prompt=system_prompt,
             server_env_overrides=server_env_overrides,
+            blocked_tool_names=blocked_tool_names,
         )
     raise ValueError(f"Unknown EVAL_DRIVER {driver!r} (use 'messages-api' or 'agent-sdk').")
 
@@ -250,6 +254,7 @@ async def _drive_via_messages_api(
     max_iterations: int = 8,
     system_prompt: str | None = None,
     server_env_overrides: dict[str, str] | None = None,
+    blocked_tool_names: frozenset[str] | None = None,
 ) -> EvalRun:
     """Drive ``prompt`` with the anthropic Messages API (bills API tokens)."""
     from mcp import ClientSession
@@ -267,6 +272,8 @@ async def _drive_via_messages_api(
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = (await session.list_tools()).tools
+            if blocked_tool_names:
+                tools = [tool for tool in tools if tool.name not in blocked_tool_names]
             anthropic_tools = mcp_tools_to_anthropic(tools)
 
             messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
@@ -294,6 +301,16 @@ async def _drive_via_messages_api(
                     if block.type != "tool_use":
                         continue
                     run.tool_calls.append(ToolCall(block.name, dict(block.input)))
+                    if blocked_tool_names and block.name in blocked_tool_names:
+                        content = f"ERROR calling {block.name}: tool is disabled for this eval run"
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": content,
+                            }
+                        )
+                        continue
                     try:
                         result = await session.call_tool(block.name, dict(block.input))
                         content = tool_result_to_text(result) or "(no content)"

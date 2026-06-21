@@ -557,7 +557,7 @@ cli = [
 
 [[package]]
 name = "mcp-ynab"
-version = "2.0.4"
+version = "2.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "keyring" },
@@ -590,7 +590,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "anthropic", specifier = ">=0.40.0" },
+    { name = "anthropic", specifier = ">=0.87.0,<1.0.0" },
     { name = "claude-agent-sdk", specifier = ">=0.2.104" },
     { name = "interrogate", specifier = ">=1.7.0" },
     { name = "mypy", specifier = ">=1.15.0" },

@@ -1,6 +1,6 @@
 [project]
 name = "mcp-ynab"
-version = "2.0.4"
+version = "2.0.6"
 description = "Model Context Protocol (MCP) server for the YNAB (You Need A Budget) API"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -65,7 +65,7 @@ dev = [
   "mypy>=1.15.0",
   "interrogate>=1.7.0",
   # Drives the LLM-eval integration tests (tests/integration/test_llm_evals.py).
-  "anthropic>=0.40.0",
+  "anthropic>=0.87.0,<1.0.0",
   "claude-agent-sdk>=0.2.104",
 ]
 

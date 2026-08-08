@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, cast
 
 from ynab.models.category import Category
 
+from .money import CurrencyInfo, decimal_to_milliunits, format_money, milliunits_to_decimal
+
 
 def _get_empty_table(headers: List[str]) -> str:
     """Create an empty markdown table with just headers."""
@@ -61,7 +63,9 @@ def _build_markdown_table(
     return header_line + sep_line + row_lines
 
 
-def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _format_accounts_output(
+    accounts: List[Dict[str, Any]], currency: Optional[CurrencyInfo] = None
+) -> Dict[str, Any]:
     """Format account data into a user-friendly structure.
 
     All 13 official YNAB ``AccountType`` values are grouped and classified
@@ -132,12 +136,14 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
         if acct_type not in account_groups:
             account_groups[acct_type] = []
 
-        balance = float(account["balance"]) / 1000
+        balance_milliunits = int(account["balance"])
+        balance = float(milliunits_to_decimal(balance_milliunits))
         account_groups[acct_type].append(
             {
                 "name": account["name"],
-                "balance": f"${balance:,.2f}",
+                "balance": format_money(balance_milliunits, currency),
                 "balance_raw": balance,
+                "balance_milliunits": balance_milliunits,
                 "id": account["id"],
             }
         )
@@ -159,8 +165,11 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
             "type": type_display_names.get(acct_type, acct_type),
             "accounts": account_groups[acct_type],
         }
-        group_total = sum(acct["balance_raw"] for acct in account_groups[acct_type])
-        group_data["total"] = f"${group_total:,.2f}"
+        group_total_milliunits = sum(
+            acct["balance_milliunits"] for acct in account_groups[acct_type]
+        )
+        group_total = float(milliunits_to_decimal(group_total_milliunits))
+        group_data["total"] = format_money(group_total_milliunits, currency)
 
         if acct_type in asset_types:
             output["summary"]["total_assets"] += group_total
@@ -184,11 +193,19 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
             _append_group(acct_type)
 
     output["summary"]["net_worth_raw"] = output["summary"]["net_worth"]
-    output["summary"]["total_assets"] = _format_dollar_amount(output["summary"]["total_assets"])
-    output["summary"]["total_liabilities"] = _format_dollar_amount(
-        output["summary"]["total_liabilities"]
+    output["summary"]["total_assets"] = format_money(
+        decimal_to_milliunits(output["summary"]["total_assets"]), currency
     )
-    output["summary"]["net_worth"] = _format_dollar_amount(output["summary"]["net_worth_raw"])
+    output["summary"]["total_liabilities"] = format_money(
+        decimal_to_milliunits(output["summary"]["total_liabilities"]), currency
+    )
+    output["summary"]["net_worth"] = format_money(
+        decimal_to_milliunits(output["summary"]["net_worth_raw"]), currency
+    )
+
+    for group in output["accounts"]:
+        for account in group["accounts"]:
+            account.pop("balance_milliunits", None)
 
     return output
 
@@ -202,9 +219,8 @@ def _process_category_data(category: Category | Dict[str, Any]) -> tuple[str, st
 
 
 def _format_dollar_amount(amount: float) -> str:
-    """Format a dollar amount with proper sign and formatting."""
-    amount_str = f"${abs(amount):,.2f}"
-    return f"-{amount_str}" if amount < 0 else amount_str
+    """Backward-compatible USD formatter for existing callers."""
+    return format_money(decimal_to_milliunits(amount))
 
 
 def _render_month_markdown(month_detail: Any) -> str:

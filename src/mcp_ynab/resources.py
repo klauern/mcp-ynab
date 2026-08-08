@@ -14,6 +14,7 @@ import mcp.types as types
 from . import server as _s
 from .code_mode import generate_stubs
 from .formatters import _build_markdown_table, _format_dollar_amount, _render_month_markdown
+from .money import CurrencyInfo, format_money
 from .tools.budgeting import _resolve_month
 
 
@@ -141,17 +142,34 @@ async def list_accounts_resource(budget_id: str) -> list[types.TextContent]:
             markdown += "_No accounts found._"
             return [types.TextContent(type="text", text=markdown)]
 
+        currency_format = getattr(response.data, "currency_format", None)
+        if currency_format is None:
+            budget = getattr(response.data, "budget", None)
+            currency_format = getattr(budget, "currency_format", None)
+        if currency_format is None:
+            for account in active:
+                account_currency = getattr(account, "currency_format", None)
+                if isinstance(account_currency, (CurrencyInfo, dict)) or isinstance(
+                    getattr(account_currency, "iso_code", None), str
+                ):
+                    currency_format = account_currency
+                    break
+        currency = (
+            CurrencyInfo.from_currency_format(currency_format)
+            if currency_format is not None
+            else None
+        )
+
         headers = ["Name", "Type", "Balance", "ID"]
         align = ["left", "left", "right", "left"]
         rows: list[list[str]] = []
         for account in active:
-            balance_milliunits = getattr(account, "balance", 0) or 0
-            balance_dollars = float(balance_milliunits) / 1000
+            balance_milliunits = int(getattr(account, "balance", 0) or 0)
             rows.append(
                 [
                     str(getattr(account, "name", "") or ""),
                     str(getattr(account, "type", "") or ""),
-                    _format_dollar_amount(balance_dollars),
+                    format_money(balance_milliunits, currency),
                     str(getattr(account, "id", "") or ""),
                 ]
             )

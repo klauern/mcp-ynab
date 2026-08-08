@@ -21,7 +21,8 @@ from ynab.models.save_payee import SavePayee
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 
 from .. import server as _s
-from ..date_bounds import ALL_HISTORY_SINCE_DATE
+from ..date_bounds import ALL_HISTORY_SINCE_DATE, utc_today
+from ..money import CurrencyInfo, decimal_to_milliunits
 from ..formatters import (
     _build_markdown_table,
     _format_accounts_output,
@@ -40,7 +41,7 @@ def _resolve_month(month: str) -> date:
     Pydantic-strict `datetime.date` annotation accepting raw strings.
     """
     if month == "current":
-        return date.today().replace(day=1)
+        return utc_today().replace(day=1)
     return date.fromisoformat(month)
 
 
@@ -83,7 +84,16 @@ async def get_accounts(budget_id: str) -> str:
             if isinstance(account, Account):
                 all_accounts.append(account.to_dict())
 
-        formatted = _format_accounts_output(all_accounts)
+        currency_format = getattr(response.data, "currency_format", None)
+        if currency_format is None:
+            budget = getattr(response.data, "budget", None)
+            currency_format = getattr(budget, "currency_format", None)
+        currency = (
+            CurrencyInfo.from_currency_format(currency_format)
+            if currency_format is not None
+            else None
+        )
+        formatted = _format_accounts_output(all_accounts, currency=currency)
 
         markdown = "# YNAB Account Summary\n\n"
         markdown += "## Summary\n"
@@ -234,7 +244,9 @@ async def assign_money(
     (does not delta) the budgeted value, so calling twice with the same
     amount is idempotent.
     """
-    body = _s.PatchMonthCategoryWrapper(category=_s.SaveMonthCategory(budgeted=int(amount * 1000)))
+    body = _s.PatchMonthCategoryWrapper(
+        category=_s.SaveMonthCategory(budgeted=decimal_to_milliunits(amount))
+    )
     async with await _s.get_ynab_client() as client:
         cats = _s.CategoriesApi(client)
         response = cats.update_month_category(budget_id, _resolve_month(month), category_id, body)
@@ -316,7 +328,7 @@ async def move_money(
     if from_category_id == to_category_id:
         raise ValueError("from_category_id and to_category_id must be different.")
 
-    delta = int(amount * 1000)
+    delta = decimal_to_milliunits(amount)
     m = _resolve_month(month)
     async with await _s.get_ynab_client() as client:
         cats = _s.CategoriesApi(client)
@@ -402,7 +414,7 @@ async def update_category(
             "At least one of name, note, category_group_id, goal_target, "
             "goal_target_date, or goal_needs_whole_amount must be provided."
         )
-    goal_target_milliunits = int(round(goal_target * 1000)) if goal_target is not None else None
+    goal_target_milliunits = decimal_to_milliunits(goal_target) if goal_target is not None else None
     # `is not None` (not truthiness) so an empty string raises a clear ValueError
     # rather than silently slipping past the guard above as a no-op update.
     parsed_goal_date = (
@@ -564,7 +576,7 @@ def _resolve_period_range(period: _Period) -> tuple[date, Optional[date]]:
     today). YNAB's ``get_transactions`` only takes ``since_date``; the upper
     bound is enforced client-side after the fetch.
     """
-    today = date.today()
+    today = utc_today()
     if period == "this_month":
         return today.replace(day=1), None
     if period == "last_month":

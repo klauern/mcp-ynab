@@ -28,8 +28,9 @@ from ynab.models.transaction_detail import TransactionDetail
 from ynab.rest import ApiException
 
 from .. import server as _s
-from ..date_bounds import ALL_HISTORY_SINCE_DATE
+from ..date_bounds import ALL_HISTORY_SINCE_DATE, utc_now, utc_today
 from ..formatters import _build_markdown_table
+from ..money import decimal_to_milliunits
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +47,7 @@ def _explicit_since_date(days_back: Optional[int]) -> date:
     """
     if days_back is None:
         return ALL_HISTORY_SINCE_DATE
-    return (datetime.now() - timedelta(days=days_back)).date()
+    return (utc_now() - timedelta(days=days_back)).date()
 
 
 def _refresh_category_cache(client: ApiClient, budget_id: str) -> List[Dict[str, Any]]:
@@ -328,12 +329,12 @@ async def create_transaction(
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
 
-        amount_milliunits = int(amount * 1000)
+        amount_milliunits = decimal_to_milliunits(amount)
 
         budget_id = await _s._resolve_budget_id(client, ctx)
 
         category_id = await _resolve_category_id(client, budget_id, category_name, ctx)
-        txn_date = date.today()
+        txn_date = utc_today()
 
         should_confirm = confirm and _s.ynab_resources.preferences.confirm_before_post
         if should_confirm and ctx is not None:
@@ -386,7 +387,7 @@ async def get_transactions(
         transactions_api = _s.TransactionsApi(client)
         all_transactions: List[TransactionDetail] = []
         if since_date is None:
-            since_date = datetime.now().replace(day=1).date()
+            since_date = utc_today().replace(day=1)
         response = transactions_api.get_transactions_by_account(
             budget_id, account_id, since_date=since_date
         )
@@ -661,8 +662,8 @@ async def find_account_transaction_subset_matches(
 
     rows = [_txn_to_reconciliation_row(txn) for txn in response.data.transactions]
     rows = rows[: max(0, candidate_limit)]
-    target_milliunits = int(round(target_amount * 1000))
-    tolerance_milliunits = int(round(abs(tolerance) * 1000))
+    target_milliunits = decimal_to_milliunits(target_amount)
+    tolerance_milliunits = decimal_to_milliunits(abs(tolerance))
     max_subset_size = max(1, min(max_subset_size, 5))
 
     matches: List[Dict[str, Any]] = []

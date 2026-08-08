@@ -62,29 +62,67 @@ def _build_markdown_table(
 
 
 def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Format account data into a user-friendly structure."""
+    """Format account data into a user-friendly structure.
+
+    All 13 official YNAB ``AccountType`` values are grouped and classified
+    into asset/liability totals.  Unknown future types are preserved in their
+    own group rather than silently dropped, so a new YNAB account type can
+    never disappear from an MCP response.
+    """
     account_groups: Dict[str, List[Dict[str, Any]]] = {}
+
+    # Every official AccountType (OpenAPI 1.86).  Order determines display
+    # order; an account of any other type is appended at the end so it stays
+    # visible even though we do not yet know how to classify it.
     type_order = [
         "checking",
         "savings",
+        "cash",
         "creditCard",
+        "lineOfCredit",
         "mortgage",
         "autoLoan",
         "studentLoan",
+        "personalLoan",
+        "medicalDebt",
         "otherAsset",
         "otherLiability",
+        "otherDebt",
     ]
 
     type_display_names = {
         "checking": "Checking Accounts",
         "savings": "Savings Accounts",
+        "cash": "Cash Accounts",
         "creditCard": "Credit Cards",
+        "lineOfCredit": "Lines of Credit",
         "mortgage": "Mortgages",
         "autoLoan": "Auto Loans",
         "studentLoan": "Student Loans",
+        "personalLoan": "Personal Loans",
+        "medicalDebt": "Medical Debt",
         "otherAsset": "Other Assets",
         "otherLiability": "Other Liabilities",
+        "otherDebt": "Other Debt",
     }
+
+    # Asset types carry a positive balance; liability types are reported as
+    # positive totals.  Anything unknown is left unclassified (not counted in
+    # either total) but still rendered.
+    asset_types = frozenset({"checking", "savings", "cash", "otherAsset"})
+    liability_types = frozenset(
+        {
+            "creditCard",
+            "lineOfCredit",
+            "mortgage",
+            "autoLoan",
+            "studentLoan",
+            "personalLoan",
+            "medicalDebt",
+            "otherLiability",
+            "otherDebt",
+        }
+    )
 
     for account in accounts:
         if account.get("closed", False) or account.get("deleted", False):
@@ -116,34 +154,38 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
         },
     }
 
+    def _append_group(acct_type: str) -> None:
+        group_data = {
+            "type": type_display_names.get(acct_type, acct_type),
+            "accounts": account_groups[acct_type],
+        }
+        group_total = sum(acct["balance_raw"] for acct in account_groups[acct_type])
+        group_data["total"] = f"${group_total:,.2f}"
+
+        if acct_type in asset_types:
+            output["summary"]["total_assets"] += group_total
+        elif acct_type in liability_types:
+            output["summary"]["total_liabilities"] += abs(group_total)
+
+        output["accounts"].append(group_data)
+
     for acct_type in type_order:
-        if acct_type in account_groups and account_groups[acct_type]:
-            group_data = {
-                "type": type_display_names.get(acct_type, acct_type),
-                "accounts": account_groups[acct_type],
-            }
-            group_total = sum(acct["balance_raw"] for acct in account_groups[acct_type])
-            group_data["total"] = f"${group_total:,.2f}"
+        if account_groups.get(acct_type):
+            _append_group(acct_type)
 
-            if acct_type in ["checking", "savings", "otherAsset"]:
-                output["summary"]["total_assets"] += group_total
-            elif acct_type in [
-                "creditCard",
-                "mortgage",
-                "autoLoan",
-                "studentLoan",
-                "otherLiability",
-            ]:
-                output["summary"]["total_liabilities"] += abs(group_total)
-
-            output["accounts"].append(group_data)
+    # Unknown future account types stay visible instead of being dropped.
+    for acct_type in account_groups:
+        if acct_type not in type_order and account_groups[acct_type]:
+            _append_group(acct_type)
 
     output["summary"]["net_worth_raw"] = (
         output["summary"]["total_assets"] - output["summary"]["total_liabilities"]
     )
-    output["summary"]["total_assets"] = f"${output['summary']['total_assets']:,.2f}"
-    output["summary"]["total_liabilities"] = f"${output['summary']['total_liabilities']:,.2f}"
-    output["summary"]["net_worth"] = f"${output['summary']['net_worth_raw']:,.2f}"
+    output["summary"]["total_assets"] = _format_dollar_amount(output["summary"]["total_assets"])
+    output["summary"]["total_liabilities"] = _format_dollar_amount(
+        output["summary"]["total_liabilities"]
+    )
+    output["summary"]["net_worth"] = _format_dollar_amount(output["summary"]["net_worth_raw"])
 
     return output
 

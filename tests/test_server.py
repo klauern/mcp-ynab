@@ -35,6 +35,77 @@ def test_format_accounts_output_groups_and_summary() -> None:
     assert formatted["summary"]["net_worth"] == "$150.00"
 
 
+ALL_OFFICIAL_ACCOUNT_TYPES = [
+    "checking",
+    "savings",
+    "cash",
+    "creditCard",
+    "lineOfCredit",
+    "otherAsset",
+    "otherLiability",
+    "mortgage",
+    "autoLoan",
+    "studentLoan",
+    "personalLoan",
+    "medicalDebt",
+    "otherDebt",
+]
+
+
+def _account(name: str, acct_type: str, balance: int) -> dict:
+    return {
+        "id": f"id-{name}",
+        "name": name,
+        "type": acct_type,
+        "balance": balance,
+        "closed": False,
+        "deleted": False,
+    }
+
+
+def test_format_accounts_output_displays_every_official_type_once() -> None:
+    accounts = [
+        _account(f"Acct-{acct_type}", acct_type, 10_000) for acct_type in ALL_OFFICIAL_ACCOUNT_TYPES
+    ]
+    formatted = server._format_accounts_output(accounts)
+
+    shown_names = {acct["name"] for group in formatted["accounts"] for acct in group["accounts"]}
+    assert len(formatted["accounts"]) == len(ALL_OFFICIAL_ACCOUNT_TYPES)
+    assert shown_names == {f"Acct-{acct_type}" for acct_type in ALL_OFFICIAL_ACCOUNT_TYPES}
+
+
+def test_format_accounts_output_classifies_all_13_types() -> None:
+    # Assets: checking, savings, cash, otherAsset (positive balance).
+    # Liabilities: the remaining nine official types (reported as positive totals).
+    asset_types = {"checking", "savings", "cash", "otherAsset"}
+    accounts = []
+    for i, acct_type in enumerate(ALL_OFFICIAL_ACCOUNT_TYPES):
+        balance = 100_000 if acct_type in asset_types else -100_000
+        accounts.append(_account(f"Acct-{acct_type}", acct_type, balance))
+
+    formatted = server._format_accounts_output(accounts)
+
+    assert formatted["summary"]["total_assets"] == "$400.00"  # 4 asset types x $100
+    assert formatted["summary"]["total_liabilities"] == "$900.00"  # 9 liability types x $100
+    assert formatted["summary"]["net_worth"] == "-$500.00"
+
+
+def test_format_accounts_output_keeps_unknown_future_types_visible() -> None:
+    formatted = server._format_accounts_output(
+        [
+            _account("FutureAccount", "holographicLedger", 50_000),
+            _account("Cash", "cash", 25_000),
+        ]
+    )
+
+    types = [group["type"] for group in formatted["accounts"]]
+    assert "holographicLedger" in types
+    assert "Cash Accounts" in types
+    # Unknown type is not silently miscounted into either total.
+    assert formatted["summary"]["total_assets"] == "$25.00"
+    assert formatted["summary"]["total_liabilities"] == "$0.00"
+
+
 def test_build_markdown_table_empty_rows() -> None:
     table = server._build_markdown_table([], ["A", "B"])
     assert "| A" in table
@@ -588,3 +659,76 @@ async def test_categorize_transaction_does_not_clobber_concurrent_memo_edit(
     assert "memo" not in captured
     assert "stale memo from before user edit" not in str(captured)
     assert captured == {"category_id": "cat-new"}
+
+
+@pytest.mark.asyncio
+async def test_categorize_transaction_alternate_id_scan_uses_all_history_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-date id types (transfer/matched) scan all history explicitly.
+
+    An alternate-ID scan must pass an explicit far-past since_date instead of
+    relying on YNAB's implicit one-year default, or transactions older than a
+    year can never be resolved by their transfer/matched id.
+    """
+    from datetime import date
+
+    captured: dict = {}
+
+    class DummyApi:
+        def get_transactions(self, budget_id: str, since_date=None):
+            captured["since_date"] = since_date
+            return type(
+                "Resp",
+                (),
+                {
+                    "data": type(
+                        "Data",
+                        (),
+                        {
+                            "transactions": [
+                                type(
+                                    "Txn",
+                                    (),
+                                    {
+                                        "id": "tx-real-id",
+                                        "transfer_transaction_id": "transfer-1",
+                                        "matched_transaction_id": None,
+                                        "import_id": None,
+                                    },
+                                )()
+                            ]
+                        },
+                    )()
+                },
+            )()
+
+        def update_transaction(self, budget_id: str, transaction_id: str, data):
+            captured["updated"] = transaction_id
+
+    class DummyCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    api = DummyApi()
+
+    async def fake_get_ynab_client():
+        return DummyCtx()
+
+    monkeypatch.setattr(server, "get_ynab_client", fake_get_ynab_client)
+    monkeypatch.setattr(server, "TransactionsApi", lambda client: api)
+    monkeypatch.setattr(server, "ExistingTransaction", lambda **kwargs: kwargs)
+    monkeypatch.setattr(
+        server, "PutTransactionWrapper", lambda transaction: {"transaction": transaction}
+    )
+
+    result = await server.categorize_transaction(
+        "budget-1", "transfer-1", "cat-new", id_type="transfer_transaction_id"
+    )
+
+    assert captured["since_date"] == date(1970, 1, 1)
+    assert captured["updated"] == "tx-real-id"
+    assert "categorized as cat-new" in result

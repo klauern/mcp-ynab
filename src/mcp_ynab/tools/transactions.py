@@ -28,7 +28,25 @@ from ynab.models.transaction_detail import TransactionDetail
 from ynab.rest import ApiException
 
 from .. import server as _s
+from ..date_bounds import ALL_HISTORY_SINCE_DATE
 from ..formatters import _build_markdown_table
+
+
+# ---------------------------------------------------------------------------
+# Explicit range handling
+# ---------------------------------------------------------------------------
+
+
+def _explicit_since_date(days_back: Optional[int]) -> date:
+    """Return the effective ``since_date`` for a read with an optional lookback.
+
+    ``None`` means "all history": YNAB would silently default an omitted
+    ``since_date`` to one year ago, so an explicit far-past bound is passed
+    instead.  The returned value is always an explicit ISO date.
+    """
+    if days_back is None:
+        return ALL_HISTORY_SINCE_DATE
+    return (datetime.now() - timedelta(days=days_back)).date()
 
 
 def _refresh_category_cache(client: ApiClient, budget_id: str) -> List[Dict[str, Any]]:
@@ -466,7 +484,7 @@ async def get_transactions_needing_attention(
             if not account.closed and not account.deleted
         }
 
-        since_date = (datetime.now() - timedelta(days=days_back)).date() if days_back else None
+        since_date = _explicit_since_date(days_back)
         response = transactions_api.get_transactions(budget_id, since_date=since_date)
         needs_attention = _filter_transactions(response.data.transactions, filter_type)
 
@@ -478,6 +496,8 @@ async def get_transactions_needing_attention(
         markdown += f"- Filter type: {filter_type}\n"
         if days_back:
             markdown += f"- Looking back {days_back} days\n"
+        else:
+            markdown += f"- Looking back: all history (since {since_date.isoformat()})\n"
         markdown += "\n"
 
         headers = ["ID", "Date", "Account", "Amount", "Cleared", "Payee", "Status", "Memo"]
@@ -561,7 +581,7 @@ async def get_account_reconciliation_profile(
 
         account = accounts_api.get_account_by_id(budget_id, account_id).data.account
         response = transactions_api.get_transactions_by_account(
-            budget_id, account_id, since_date=since_date
+            budget_id, account_id, since_date=since_date or ALL_HISTORY_SINCE_DATE
         )
 
     rows = [_txn_to_reconciliation_row(txn) for txn in response.data.transactions]
@@ -636,7 +656,7 @@ async def find_account_transaction_subset_matches(
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
         response = transactions_api.get_transactions_by_account(
-            budget_id, account_id, since_date=since_date
+            budget_id, account_id, since_date=since_date or ALL_HISTORY_SINCE_DATE
         )
 
     rows = [_txn_to_reconciliation_row(txn) for txn in response.data.transactions]
@@ -708,11 +728,14 @@ async def categorize_transaction(
         if id_type == "id":
             resolved_id = transaction_id
         else:
-            since_date = None
+            since_date = ALL_HISTORY_SINCE_DATE
             if id_type == "import_id" and ":" in transaction_id:
                 try:
                     since_date = datetime.strptime(transaction_id.split(":")[2], "%Y-%m-%d").date()
                 except (ValueError, IndexError):
+                    # No parseable date in the import id — fall back to an
+                    # explicit all-history bound rather than YNAB's one-year
+                    # default, so the scan cannot miss older transactions.
                     pass
             response = transactions_api.get_transactions(budget_id, since_date=since_date)
             target_transaction = _find_transaction_by_id(
@@ -1183,13 +1206,13 @@ async def get_transactions_by_category(
 ) -> str:
     """List transactions assigned to a specific category in a YNAB budget."""
     async with await _s.get_ynab_client() as client:
-        categories_api = _s.CategoriesApi(client)
+        transactions_api = _s.TransactionsApi(client)
         accounts_api = _s.AccountsApi(client)
 
         accounts_response = accounts_api.get_accounts(budget_id)
         account_map = {account.id: account.name for account in accounts_response.data.accounts}
 
-        response = categories_api.get_transactions_by_category(
+        response = transactions_api.get_transactions_by_category(
             budget_id, category_id, since_date=since_date
         )
         transactions = list(response.data.transactions or [])

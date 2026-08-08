@@ -474,6 +474,45 @@ async def test_find_account_transaction_subset_matches_returns_compact_matches(
     assert [txn["id"] for txn in match["transactions"]] == ["t-2", "t-3"]
 
 
+@pytest.mark.asyncio
+async def test_account_reconciliation_profile_defaults_to_all_history(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    """ "Defaults to all" must be an explicit bound, not YNAB's one-year default."""
+    from datetime import date
+
+    mock_ynab_apis.accounts.get_account_by_id.return_value = _resp(
+        account=_account_mock(
+            "acct-1",
+            "Checking",
+            "checking",
+            0,
+            cleared_balance_milliunits=0,
+            uncleared_balance_milliunits=0,
+        )
+    )
+    mock_ynab_apis.transactions.get_transactions_by_account.return_value = _resp(transactions=[])
+
+    await server.get_account_reconciliation_profile("b-1", "acct-1")
+
+    call = mock_ynab_apis.transactions.get_transactions_by_account.call_args
+    assert call.kwargs["since_date"] == date(1970, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_subset_matches_defaults_to_all_history(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    from datetime import date
+
+    mock_ynab_apis.transactions.get_transactions_by_account.return_value = _resp(transactions=[])
+
+    await server.find_account_transaction_subset_matches("b-1", "acct-1", target_amount=-75.0)
+
+    call = mock_ynab_apis.transactions.get_transactions_by_account.call_args
+    assert call.kwargs["since_date"] == date(1970, 1, 1)
+
+
 # ---------------------------------------------------------------------------
 # get_transactions_needing_attention
 # ---------------------------------------------------------------------------
@@ -558,6 +597,28 @@ async def test_needs_attention_returns_friendly_message_when_nothing_to_show(
     result = await server.get_transactions_needing_attention("b-1")
 
     assert "_No transactions need attention._" in result
+
+
+@pytest.mark.asyncio
+async def test_needs_attention_none_days_back_scans_all_history(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    """days_back=None means all history — never YNAB's one-year default."""
+
+    from mcp_ynab.date_bounds import ALL_HISTORY_SINCE_DATE
+
+    mock_ynab_apis.accounts.get_accounts.return_value = _resp(
+        accounts=[SimpleNamespace(id="a-1", name="Checking", closed=False, deleted=False)]
+    )
+    mock_ynab_apis.transactions.get_transactions.return_value = _resp(
+        transactions=[_txn_mock("t-1", category_id=None, approved=True, payee_name="Mystery")]
+    )
+
+    result = await server.get_transactions_needing_attention("b-1", days_back=None)
+
+    call = mock_ynab_apis.transactions.get_transactions.call_args
+    assert call.kwargs["since_date"] == ALL_HISTORY_SINCE_DATE
+    assert f"since {ALL_HISTORY_SINCE_DATE.isoformat()}" in result
 
 
 @pytest.mark.asyncio
@@ -1226,6 +1287,44 @@ async def test_bulk_categorize_propagates_api_exception(
         await server.bulk_categorize(
             "b-1", [{"transaction_id": "t-1", "category_id": _uuid("c-1")}]
         )
+
+
+# ---------------------------------------------------------------------------
+# merge_payees (scans all history, never YNAB's one-year default)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_merge_payees_scans_all_history(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    """merge_payees must not silently leave pre-one-year transactions behind."""
+    from datetime import date
+
+    mock_ynab_apis.transactions.get_transactions_by_payee.return_value = _resp(
+        transactions=[_txn_mock("t-1", payee_name="Old Payee")]
+    )
+    mock_ynab_apis.transactions.update_transactions.return_value = _resp(transaction_ids=["t-1"])
+
+    result = await server.merge_payees("b-1", "payee-src", _uuid("payee-dst"))
+
+    call = mock_ynab_apis.transactions.get_transactions_by_payee.call_args
+    assert call.kwargs["since_date"] == date(1970, 1, 1)
+    assert "all history (since 1970-01-01)" in result
+    assert "Moved **1** transaction(s)" in result
+
+
+@pytest.mark.asyncio
+async def test_merge_payees_reports_acknowledged_range_when_nothing_to_move(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    mock_ynab_apis.transactions.get_transactions_by_payee.return_value = _resp(transactions=[])
+
+    result = await server.merge_payees("b-1", "payee-src", _uuid("payee-dst"))
+
+    assert "Moved **0** transaction(s)" in result
+    assert "all history (since 1970-01-01)" in result
+    mock_ynab_apis.transactions.update_transactions.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2109,7 +2208,7 @@ async def test_get_transactions_by_category_renders_table(
     mock_ynab_apis.accounts.get_accounts.return_value = _resp(
         accounts=[SimpleNamespace(id="acct-1", name="Checking", closed=False, deleted=False)]
     )
-    mock_ynab_apis.categories.get_transactions_by_category.return_value = _resp(
+    mock_ynab_apis.transactions.get_transactions_by_category.return_value = _resp(
         transactions=[
             _txn_mock(
                 "t-1",
@@ -2143,11 +2242,11 @@ async def test_get_transactions_by_category_passes_since_date(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
     mock_ynab_apis.accounts.get_accounts.return_value = _resp(accounts=[])
-    mock_ynab_apis.categories.get_transactions_by_category.return_value = _resp(transactions=[])
+    mock_ynab_apis.transactions.get_transactions_by_category.return_value = _resp(transactions=[])
 
     await server.get_transactions_by_category("b-1", "cat-1", since_date="2026-01-01")
 
-    call = mock_ynab_apis.categories.get_transactions_by_category.call_args
+    call = mock_ynab_apis.transactions.get_transactions_by_category.call_args
     assert call.kwargs["since_date"] == "2026-01-01"
 
 
@@ -2156,7 +2255,7 @@ async def test_get_transactions_by_category_returns_friendly_message_when_empty(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
     mock_ynab_apis.accounts.get_accounts.return_value = _resp(accounts=[])
-    mock_ynab_apis.categories.get_transactions_by_category.return_value = _resp(transactions=[])
+    mock_ynab_apis.transactions.get_transactions_by_category.return_value = _resp(transactions=[])
 
     result = await server.get_transactions_by_category("b-1", "cat-1")
 

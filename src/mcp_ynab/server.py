@@ -64,6 +64,7 @@ from .state import (
     _load_json_file,  # noqa: F401
     _save_json_file,  # noqa: F401
 )
+from .dry_run import install_dry_run_interceptor
 
 load_dotenv(verbose=True)
 logger = logging.getLogger(__name__)
@@ -229,6 +230,11 @@ from .prompts import (  # noqa: E402, F401
     spending_by_payee,
     weekly_review,
 )
+
+# Eval-only: replace YNAB-writing handlers before either direct MCP calls or
+# Code Mode's internal registry dispatch can reach them.  No environment flag
+# means this is a no-op and production behavior is identical.
+install_dry_run_interceptor(mcp)
 
 _CODE_MODE_BOOTSTRAP_VISIBLE_TOOLS = frozenset(
     {

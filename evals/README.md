@@ -67,11 +67,18 @@ Notes:
 
 ## Safety
 
-Scope is **read-only + dry-run**. The server defaults to
+The ordinary eval suite is **read-only + dry-run**. The server defaults to
 `code_mode_mutations_enabled=False`, so `ynab.write.*` is blocked by the runner
 (AST audit + fail-closed dispatch) and hidden from the Code Mode spec. Nothing
 these evals do can change your budget. (To validate a *write* end-to-end you'd
 need a separate, explicitly opted-in eval — see issue `mcp-ynab-ala`.)
+
+The dual-surface benchmark uses a separate, eval-only dry-run recorder. It
+starts each server with a per-run `MCP_YNAB_EVAL_DRY_RUN_INTENTS_PATH`; that
+replaces every mutating handler (except the Code Mode dispatcher) with an
+intent recorder before it can reach YNAB or local state. This lets either
+surface call its normal mutation schema while persisting the validated request
+to `intended_writes.json`. It does not enable ordinary Code Mode mutations.
 
 ## Run the eval set
 
@@ -85,6 +92,29 @@ uv run pytest -m eval -k "Dining Spend"
 
 `task test:integration` runs the regular integration tests and **excludes**
 these (they cost API tokens).
+
+## Run the dual-surface benchmark
+
+The benchmark runner sends every selected task through both Code Mode and the
+direct-tool surface, then writes one self-contained iteration directory:
+
+```bash
+uv run python evals/run_dual_eval.py
+uv run python evals/run_dual_eval.py --task-ids 1,4 --workspace /tmp/mcp-ynab-evals
+```
+
+Each `<iteration>/<task-id>/<config>/outputs/intended_writes.json` records the
+validated dry-run payloads. Its sibling `grading.json` contains an
+`expectations` array of `{text, passed, evidence}` assertions plus a pass-rate
+summary and execution metrics. The deterministic checks verify completion,
+payload shape and fixed values for each mutation task, expected read operations
+where applicable, and task-specific text expectations in `evals.json`. This
+makes failures reviewable without another model call; it does not turn a
+dry-run request into a real YNAB mutation.
+
+The iteration root also contains `benchmark.json` (the viewer-compatible raw
+report) and `benchmark.md`. The markdown report leads with token savings,
+defined as `direct_tools − code_mode`, then compares pass rate and duration.
 
 ## Run a single ad-hoc prompt
 

@@ -14,7 +14,13 @@
         "get_categories",
         "get_category_for_month"
       ],
-      "expectations": []
+      "expectations": [
+        {
+          "text": "The answer reports a numeric spending total.",
+          "type": "final_text_regex",
+          "pattern": "(?i)(?:\\$|\\b)\\d+(?:\\.\\d{2})?"
+        }
+      ]
     },
     {
       "id": 2,
@@ -26,7 +32,13 @@
         "get_transactions_needing_attention",
         "get_transactions"
       ],
-      "expectations": []
+      "expectations": [
+        {
+          "text": "The answer identifies uncategorized transactions.",
+          "type": "final_text_contains",
+          "value": "uncategorized"
+        }
+      ]
     },
     {
       "id": 3,
@@ -39,7 +51,13 @@
         "get_category_for_month",
         "get_month"
       ],
-      "expectations": []
+      "expectations": [
+        {
+          "text": "The answer describes categories that are over budget.",
+          "type": "final_text_contains",
+          "value": "over"
+        }
+      ]
     },
     {
       "id": 4,
@@ -51,7 +69,13 @@
         "get_accounts",
         "get_account_balance"
       ],
-      "expectations": []
+      "expectations": [
+        {
+          "text": "The answer reports a numeric cash balance.",
+          "type": "final_text_regex",
+          "pattern": "(?i)(?:\\$|\\b)\\d+(?:\\.\\d{2})?"
+        }
+      ]
     },
     {
       "id": 5,
@@ -62,7 +86,13 @@
       "expected_code_refs": [
         "get_transactions"
       ],
-      "expectations": []
+      "expectations": [
+        {
+          "text": "The answer identifies transactions.",
+          "type": "final_text_contains",
+          "value": "transaction"
+        }
+      ]
     },
     {
       "id": 6,
@@ -70,7 +100,41 @@
       "prompt": "Categorize the five most recent uncategorized transactions as Groceries, but don't actually change anything.",
       "expected_output": "Identifies up to five recent uncategorized transactions (with dates/payees/amounts/ids) and clearly lays out the Groceries categorization it would apply to each, without performing a real write.",
       "category": "mutation",
-      "expectations": []
+      "intent_expectation": {
+        "alternatives": [
+          {
+            "tools": [
+              "categorize_transaction"
+            ],
+            "arguments": {
+              "budget_id": null,
+              "transaction_id": null,
+              "category_id": null
+            }
+          },
+          {
+            "tools": [
+              "bulk_categorize"
+            ],
+            "arguments": {
+              "budget_id": null,
+              "assignments": null
+            }
+          }
+        ]
+      },
+      "expectations": [
+        {
+          "text": "The answer names the Groceries category.",
+          "type": "final_text_contains",
+          "value": "Groceries"
+        },
+        {
+          "text": "The answer describes a hypothetical change.",
+          "type": "final_text_contains",
+          "value": "would"
+        }
+      ]
     },
     {
       "id": 7,
@@ -78,7 +142,27 @@
       "prompt": "Approve every unapproved transaction from last week, but only show me what you would update.",
       "expected_output": "Identifies last week's unapproved transactions and states that it would mark each approved, listing the affected transactions, without submitting any change.",
       "category": "mutation",
-      "expectations": []
+      "intent_expectation": {
+        "tools": [
+          "approve_transactions"
+        ],
+        "arguments": {
+          "budget_id": null,
+          "transaction_ids": null
+        }
+      },
+      "expectations": [
+        {
+          "text": "The answer describes approving transactions.",
+          "type": "final_text_contains",
+          "value": "approv"
+        },
+        {
+          "text": "The answer describes a hypothetical change.",
+          "type": "final_text_contains",
+          "value": "would"
+        }
+      ]
     },
     {
       "id": 8,
@@ -86,7 +170,39 @@
       "prompt": "Move $50 from Dining Out to Groceries for this month as a dry run.",
       "expected_output": "Explains the intended move of $50 from Dining Out to Groceries for the current month, including the resulting budgeted amounts when available, without applying the change.",
       "category": "mutation",
-      "expectations": []
+      "intent_expectation": {
+        "tools": [
+          "move_money"
+        ],
+        "arguments": {
+          "budget_id": null,
+          "from_category_id": null,
+          "to_category_id": null,
+          "amount": 50
+        }
+      },
+      "expectations": [
+        {
+          "text": "The answer names the Dining Out category.",
+          "type": "final_text_contains",
+          "value": "Dining Out"
+        },
+        {
+          "text": "The answer names the Groceries category.",
+          "type": "final_text_contains",
+          "value": "Groceries"
+        },
+        {
+          "text": "The answer names the requested transfer amount.",
+          "type": "final_text_contains",
+          "value": "50"
+        },
+        {
+          "text": "The answer describes a hypothetical change.",
+          "type": "final_text_contains",
+          "value": "would"
+        }
+      ]
     },
     {
       "id": 9,
@@ -94,7 +210,33 @@
       "prompt": "Without changing anything yet, walk me through how you would set the monthly goal target for my Groceries category to $200.",
       "expected_output": "Identifies the Groceries category from the budget and explains setting a recurring monthly target of $200 for it, without applying the change. A clear, correct plan is sufficient; the server is read-only so the write is not performed.",
       "category": "mutation",
-      "expectations": []
+      "intent_expectation": {
+        "tools": [
+          "update_category"
+        ],
+        "arguments": {
+          "budget_id": null,
+          "category_id": null,
+          "goal_target": 200
+        }
+      },
+      "expectations": [
+        {
+          "text": "The answer names the Groceries category.",
+          "type": "final_text_contains",
+          "value": "Groceries"
+        },
+        {
+          "text": "The answer names the requested target amount.",
+          "type": "final_text_contains",
+          "value": "200"
+        },
+        {
+          "text": "The answer describes a hypothetical change.",
+          "type": "final_text_contains",
+          "value": "would"
+        }
+      ]
     }
   ]
 }

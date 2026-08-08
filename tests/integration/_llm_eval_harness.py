@@ -55,20 +55,22 @@ CODE_MODE_SYSTEM = (
     "with a `ynab` object in scope. Call read operations as "
     "`await ynab.read.<operation>(...)` and `return` the value you want back.\n\n"
     "Resolve ids (budget, category, account) by reading them rather than guessing. "
-    "The environment is read-only: `ynab.write.*` is unavailable, so for any change "
-    "request, gather the relevant data and describe what you would do — do not attempt "
-    "to apply it. When done, give the user a clear final answer in plain language."
+    "Write calls run in a dry-run recorder: they persist the intended payload but never "
+    "change YNAB. For a requested change, resolve IDs, call the appropriate "
+    "`ynab.write.*` operation once, then explain the captured intent. When done, give "
+    "the user a clear final answer in plain language."
 )
 
 # Orient the model for direct-tools mode: all YNAB tools are visible as flat MCP
-# tools. Same read-only + describe-only posture as Code Mode — mutations are
-# blocked at the structural-check layer so no real writes can sneak through.
+# tools. Write calls are intercepted server-side and recorded as dry-run
+# payloads, so the model can exercise the normal direct mutation schema.
 DIRECT_TOOLS_SYSTEM = (
     "You operate a YNAB budget through direct MCP tools. Use the available read tools "
     "to answer questions about the budget. Resolve ids (budget, category, account) by "
-    "reading them rather than guessing. The environment is read-only: for any change "
-    "request, gather the relevant data and describe what you would do — do not attempt "
-    "to apply it. When done, give the user a clear final answer in plain language."
+    "reading them rather than guessing. Write calls run in a dry-run recorder: they "
+    "persist the intended payload but never change YNAB. For a requested change, call "
+    "the appropriate write tool once, then explain the captured intent. When done, "
+    "give the user a clear final answer in plain language."
 )
 
 # YNAB-mutating tools. Dry-run/read evals must never call these — the structural
@@ -92,6 +94,7 @@ YNAB_WRITE_TOOLS = frozenset(
         "rename_payee",
         "set_api_key",
         "clear_api_key",
+        "split_transaction",
     }
 )
 

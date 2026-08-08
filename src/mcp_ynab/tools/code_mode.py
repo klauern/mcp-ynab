@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context
 
 from .. import server as _s
 from ..code_mode import build_spec, run_code, run_search
+from ..dry_run import dry_run_enabled
 
 
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
@@ -35,11 +36,14 @@ async def execute(
     if timeout is not None:
         timeout_s = min(max(timeout, 0.1), prefs.code_mode_timeout_s)
 
+    # The eval-only recorder makes every exposed write handler non-dispatching.
+    # Keep the normal preference gate authoritative outside that explicit mode.
+    mutations_enabled = prefs.code_mode_mutations_enabled or dry_run_enabled()
     result = await run_code(
         code,
         mcp=_s.mcp,
         ctx=ctx,
-        mutations_enabled=prefs.code_mode_mutations_enabled,
+        mutations_enabled=mutations_enabled,
         timeout_s=timeout_s,
         max_output_chars=prefs.code_mode_max_output_chars,
     )
@@ -72,7 +76,10 @@ async def search(
             "truncated": False,
         }
 
-    spec = build_spec(_s.mcp, mutations_enabled=prefs.code_mode_mutations_enabled)
+    spec = build_spec(
+        _s.mcp,
+        mutations_enabled=prefs.code_mode_mutations_enabled or dry_run_enabled(),
+    )
     result = await run_search(
         code,
         spec=spec,

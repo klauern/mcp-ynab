@@ -2156,6 +2156,8 @@ async def test_create_scheduled_transaction_rejects_payee_id_and_name() -> None:
 async def test_create_scheduled_transaction_uses_start_date(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
+    from datetime import datetime, timedelta, timezone
+
     created = MagicMock()
     created.id = "sched-xyz"
     created.payee_name = "Landlord"
@@ -2164,22 +2166,21 @@ async def test_create_scheduled_transaction_uses_start_date(
         scheduled_transaction=created
     )
 
+    start = datetime.now(timezone.utc).date() + timedelta(days=30)
     await server.create_scheduled_transaction(
-        "b-1", _uuid("acct-1"), -1500.00, start_date="2026-06-01"
+        "b-1", _uuid("acct-1"), -1500.00, start_date=start.isoformat()
     )
 
     call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
     _, wrapper = call.args
-    from datetime import date
-
-    assert wrapper.scheduled_transaction.var_date == date(2026, 6, 1)
+    assert wrapper.scheduled_transaction.var_date == start
 
 
 @pytest.mark.asyncio
-async def test_create_scheduled_transaction_defaults_to_today(
+async def test_create_scheduled_transaction_defaults_to_future_utc_date(
     mock_ynab_apis: SimpleNamespace,
 ) -> None:
-    from datetime import date
+    from datetime import datetime, timedelta, timezone
 
     created = MagicMock()
     created.id = "sched-def"
@@ -2193,7 +2194,55 @@ async def test_create_scheduled_transaction_defaults_to_today(
 
     call = mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.call_args
     _, wrapper = call.args
-    assert wrapper.scheduled_transaction.var_date == date.today()
+    # YNAB requires a strictly future date; the default is tomorrow in UTC.
+    assert wrapper.scheduled_transaction.var_date == (
+        datetime.now(timezone.utc).date() + timedelta(days=1)
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_rejects_today_and_past_dates(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    for bad_date in (today.isoformat(), (today - timedelta(days=1)).isoformat()):
+        with pytest.raises(ValueError, match="must be in the future"):
+            await server.create_scheduled_transaction(
+                "b-1", _uuid("acct-1"), -50.00, start_date=bad_date
+            )
+    mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_transaction_enforces_five_year_limit(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    from datetime import date, datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    five_years = date(today.year + 5, today.month, today.day)
+
+    # The exact five-year limit is valid.
+    created = MagicMock()
+    created.id = "sched-far"
+    created.payee_name = "College Fund"
+    created.account_name = "Checking"
+    mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.return_value = _resp(
+        scheduled_transaction=created
+    )
+    await server.create_scheduled_transaction(
+        "b-1", _uuid("acct-1"), -100.00, start_date=five_years.isoformat()
+    )
+    mock_ynab_apis.scheduled_transactions.create_scheduled_transaction.assert_called_once()
+
+    # More than five years out is rejected before the API call.
+    over = five_years + timedelta(days=1)
+    with pytest.raises(ValueError, match="within five years"):
+        await server.create_scheduled_transaction(
+            "b-1", _uuid("acct-1"), -100.00, start_date=over.isoformat()
+        )
 
 
 # ---------------------------------------------------------------------------

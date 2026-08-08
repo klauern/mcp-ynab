@@ -10,7 +10,7 @@ monkeypatches propagate.
 
 import difflib
 import itertools
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from mcp.server.fastmcp import Context
@@ -1135,6 +1135,41 @@ _FREQUENCY_VALUES = Literal[
 ]
 
 
+def _utc_today() -> date:
+    """Return today's date in UTC — the reference frame YNAB's server uses."""
+    return datetime.now(timezone.utc).date()
+
+
+def _five_years_out(today: date) -> date:
+    """Return the latest date a scheduled transaction may start (5 years out)."""
+    try:
+        return today.replace(year=today.year + 5)
+    except ValueError:
+        # Feb 29 in a non-leap target year -> Feb 28.
+        return today.replace(year=today.year + 5, day=28)
+
+
+def _validate_scheduled_transaction_date(txn_date: date) -> None:
+    """Validate a scheduled transaction start date against YNAB's boundaries.
+
+    YNAB requires the date to be strictly in the future and no more than five
+    calendar years out.  Validation happens locally so an invalid value never
+    reaches the API and triggers an HTTP 400.
+    """
+    today = _utc_today()
+    if txn_date <= today:
+        raise ValueError(
+            f"Scheduled transaction start date must be in the future; "
+            f"got {txn_date.isoformat()} (today is {today.isoformat()})."
+        )
+    max_date = _five_years_out(today)
+    if txn_date > max_date:
+        raise ValueError(
+            f"Scheduled transaction start date must be within five years "
+            f"(by {max_date.isoformat()}); got {txn_date.isoformat()}."
+        )
+
+
 @_s.mcp.tool(annotations=_s.MUTATING_TOOL)
 async def create_scheduled_transaction(
     budget_id: str,
@@ -1165,7 +1200,10 @@ async def create_scheduled_transaction(
     if payee_id is not None and payee_name is not None:
         raise ValueError("create_scheduled_transaction accepts payee_id or payee_name, not both.")
 
-    txn_date = date.fromisoformat(start_date) if start_date else date.today()
+    # Default to tomorrow in UTC: YNAB requires a strictly future start date,
+    # so "today" is rejected before it reaches the API.
+    txn_date = date.fromisoformat(start_date) if start_date else _utc_today() + timedelta(days=1)
+    _validate_scheduled_transaction_date(txn_date)
     amount_milliunits = int(round(amount * 1000))
     txn = SaveScheduledTransaction(
         account_id=account_id,

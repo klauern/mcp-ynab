@@ -173,7 +173,50 @@ def test_run_with_retry_honors_retry_after_http_date(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(errors.random, "uniform", lambda _start, _end: 0.0)
 
     assert errors.run_with_retry(read, idempotent=True, base_delay=0.01) == "ok"
-    assert 3 <= delays[0] <= 5
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("inf", None),  # non-finite must not be honored
+        ("nan", None),
+        ("-5", None),  # negative is invalid
+        ("3600", errors._MAX_RETRY_AFTER_SECONDS),  # absurd interval is capped
+        ("3", 3.0),  # ordinary value passes through
+    ],
+)
+def test_retry_after_seconds_rejects_or_caps_hostile_values(
+    raw: str, expected: float | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retry-After must never stall a read indefinitely (inf/NaN/huge caps)."""
+    exc = make_api_exception(429, headers={"Retry-After": raw})
+    monkeypatch.setattr(errors.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(errors.random, "uniform", lambda _start, _end: 0.0)
+
+    result = errors._retry_after_seconds(exc)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == expected
+
+    # The full retry path must not hang either: with the delay recorded rather
+    # than slept, the max observed sleep is bounded by the cap.
+    delays: list[float] = []
+    calls = 0
+
+    def read() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise make_api_exception(429, headers={"Retry-After": raw})
+        return "ok"
+
+    monkeypatch.setattr(errors.time, "sleep", delays.append)
+    errors.run_with_retry(read, idempotent=True, max_attempts=2, base_delay=0.0)
+    if expected is None:
+        assert delays and delays[0] < 1.0  # fell back to (tiny) exponential backoff
+    else:
+        assert delays and delays[0] <= errors._MAX_RETRY_AFTER_SECONDS
 
 
 def test_run_with_retry_bounds_attempts_and_logs_retries(

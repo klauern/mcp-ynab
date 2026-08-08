@@ -8,9 +8,11 @@ through late attribute lookup. Pure formatting helpers are imported from
 """
 
 from datetime import date, timedelta
+import logging
 from typing import Any, Dict, List, Literal, Optional, cast
 
 from mcp.server.fastmcp import Context
+from ynab.api_client import ApiClient
 from ynab.models.account import Account
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
 from ynab.models.patch_category_wrapper import PatchCategoryWrapper
@@ -22,7 +24,7 @@ from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWit
 
 from .. import server as _s
 from ..date_bounds import ALL_HISTORY_SINCE_DATE, utc_today
-from ..money import CurrencyInfo, decimal_to_milliunits
+from ..money import currency_info_or_none, decimal_to_milliunits
 from ..formatters import (
     _build_markdown_table,
     _format_accounts_output,
@@ -31,6 +33,8 @@ from ..formatters import (
     _render_month_category_markdown,
     _render_month_markdown,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_month(month: str) -> date:
@@ -43,6 +47,22 @@ def _resolve_month(month: str) -> date:
     if month == "current":
         return utc_today().replace(day=1)
     return date.fromisoformat(month)
+
+
+async def _resolve_budget_currency_format(client: ApiClient, budget_id: str) -> Any:
+    """Return the plan's ``currency_format`` object, or ``None`` if unavailable.
+
+    Account responses do not carry currency metadata on SDK 4.3, so tools that
+    render account balances look the budget up once.  Failures degrade to
+    ``None`` (the USD display fallback) rather than breaking the account read.
+    """
+    try:
+        plans_api = _s.PlansApi(client)
+        plan = plans_api.get_plan_by_id(budget_id).data.plan
+        return getattr(plan, "currency_format", None)
+    except Exception as exc:  # noqa: BLE001 — currency is display metadata, never fatal
+        logger.debug("Currency lookup failed for budget %s: %s", budget_id, exc)
+        return None
 
 
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
@@ -84,15 +104,8 @@ async def get_accounts(budget_id: str) -> str:
             if isinstance(account, Account):
                 all_accounts.append(account.to_dict())
 
-        currency_format = getattr(response.data, "currency_format", None)
-        if currency_format is None:
-            budget = getattr(response.data, "budget", None)
-            currency_format = getattr(budget, "currency_format", None)
-        currency = (
-            CurrencyInfo.from_currency_format(currency_format)
-            if currency_format is not None
-            else None
-        )
+        currency_format = await _resolve_budget_currency_format(client, budget_id)
+        currency = currency_info_or_none(currency_format)
         formatted = _format_accounts_output(all_accounts, currency=currency)
 
         markdown = "# YNAB Account Summary\n\n"

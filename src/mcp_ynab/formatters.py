@@ -138,10 +138,18 @@ def _format_accounts_output(
 
         balance_milliunits = int(account["balance"])
         balance = float(milliunits_to_decimal(balance_milliunits))
+        # Prefer the SDK's own currency-formatted balance when the API supplied
+        # it (official formatted field, always right for the plan's currency);
+        # fall back to our currency-aware renderer for mocks/legacy payloads.
+        # Str-typed only: an unconfigured mock's auto-attribute must not leak
+        # into display output.
+        balance_display = account.get("balance_formatted")
+        if not isinstance(balance_display, str):
+            balance_display = format_money(balance_milliunits, currency)
         account_groups[acct_type].append(
             {
                 "name": account["name"],
-                "balance": format_money(balance_milliunits, currency),
+                "balance": balance_display,
                 "balance_raw": balance,
                 "balance_milliunits": balance_milliunits,
                 "id": account["id"],
@@ -219,7 +227,14 @@ def _process_category_data(category: Category | Dict[str, Any]) -> tuple[str, st
 
 
 def _format_dollar_amount(amount: float) -> str:
-    """Backward-compatible USD formatter for existing callers."""
+    """Backward-compatible USD formatter for existing callers.
+
+    Intentional policy change: money values now round half-up via
+    :func:`mcp_ynab.money.decimal_to_milliunits` instead of Python's binary
+    float formatting, so edge values like ``2.675`` render ``$2.68`` rather
+    than the old float artifact ``$2.67``.  Ordinary USD output (two decimal
+    places, thousands separators, leading minus) is unchanged.
+    """
     return format_money(decimal_to_milliunits(amount))
 
 

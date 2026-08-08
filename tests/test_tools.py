@@ -306,6 +306,60 @@ async def test_get_accounts_propagates_api_exception(mock_ynab_apis: SimpleNames
         await server.get_accounts("b-1")
 
 
+@pytest.mark.asyncio
+async def test_get_accounts_renders_plan_currency_for_non_usd_budget(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    """Non-USD budgets render with the plan's own currency symbol + precision."""
+    accounts = [_account_mock("a-1", "Main", "checking", 1_234_567)]
+    mock_ynab_apis.accounts.get_accounts.return_value = _resp(accounts=accounts)
+    mock_ynab_apis.budgets.get_plan_by_id.return_value = _resp(
+        plan=SimpleNamespace(
+            currency_format=SimpleNamespace(
+                iso_code="BHD",
+                decimal_digits=3,
+                currency_symbol="BD",
+                symbol_first=True,
+                display_symbol=True,
+                decimal_separator=".",
+                group_separator=",",
+            )
+        )
+    )
+
+    result = await server.get_accounts("b-1")
+
+    assert "BD1,234.567" in result
+    assert "Total Assets:** BD1,234.567" in result
+
+
+@pytest.mark.asyncio
+async def test_get_accounts_prefers_sdk_formatted_balance_and_degrades_without_plan(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    """Official balance_formatted wins when present; absent/unconfigured plan falls back to USD."""
+    formatted_account = _account_mock("a-1", "Main", "checking", 5_000_000)
+    formatted_account.to_dict.return_value = {
+        "id": "a-1",
+        "name": "Main",
+        "type": "checking",
+        "balance": 5_000_000,
+        "balance_formatted": "5.000,00 €",
+        "closed": False,
+        "deleted": False,
+    }
+    mock_ynab_apis.accounts.get_accounts.return_value = _resp(accounts=[formatted_account])
+    # Unconfigured PlansApi mock: get_plan_by_id returns MagicMock garbage that
+    # currency_info_or_none must reject, leaving per-account display on the
+    # official formatted field and totals on the USD fallback.
+
+    result = await server.get_accounts("b-1")
+
+    assert "5.000,00 €" in result  # official formatted field preferred
+    assert "Total Assets:** $5,000.00" in result  # totals fall back to USD cleanly
+    assert "MagicMock" not in result
+
+
 # ---------------------------------------------------------------------------
 # get_transactions
 # ---------------------------------------------------------------------------

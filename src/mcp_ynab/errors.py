@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import json
 import logging
+import math
 import random
 import time
 from typing import Any, Callable, Optional
@@ -21,6 +22,11 @@ from ynab.rest import ApiException
 logger = logging.getLogger(__name__)
 
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503})
+# A Retry-After interval larger than this is treated as this cap.  Honoring an
+# unbounded or absurd interval would let a misbehaving server stall a read
+# indefinitely; the cap still respects the server's intent for every practical
+# rate-limit window while keeping retries bounded.
+_MAX_RETRY_AFTER_SECONDS = 300.0
 
 
 class YNABAPIError(Exception):
@@ -237,7 +243,13 @@ def _guidance_for_status(status: Optional[int]) -> str:
 
 
 def _retry_after_seconds(exc: ApiException) -> Optional[float]:
-    """Return a non-negative Retry-After delay from seconds or an HTTP-date."""
+    """Return a finite, capped Retry-After delay from seconds or an HTTP-date.
+
+    Values that are missing, negative, non-finite (``inf``/``NaN``), or
+    unparseable yield ``None`` so the caller falls back to exponential backoff.
+    Finite values are capped at :data:`_MAX_RETRY_AFTER_SECONDS` so a hostile
+    or buggy ``Retry-After`` header can never stall a read indefinitely.
+    """
     try:
         headers = getattr(exc, "headers", None)
         if not headers:
@@ -249,10 +261,12 @@ def _retry_after_seconds(exc: ApiException) -> Optional[float]:
                 break
         if value is None:
             return None
-        seconds = float(str(value).strip())
-        if seconds >= 0:
-            return seconds
-        return None
+        try:
+            seconds = float(str(value).strip())
+        except (TypeError, ValueError):
+            seconds = None
+        if seconds is not None and math.isfinite(seconds) and seconds >= 0:
+            return min(seconds, _MAX_RETRY_AFTER_SECONDS)
     except (TypeError, ValueError, AttributeError):
         pass
 
@@ -260,6 +274,9 @@ def _retry_after_seconds(exc: ApiException) -> Optional[float]:
         parsed = parsedate_to_datetime(str(value))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
-        return max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
+        delta = (parsed - datetime.now(timezone.utc)).total_seconds()
+        if not math.isfinite(delta):
+            return None
+        return min(max(0.0, delta), _MAX_RETRY_AFTER_SECONDS)
     except (TypeError, ValueError, OverflowError):
         return None

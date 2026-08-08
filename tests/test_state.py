@@ -19,6 +19,7 @@ from mcp_ynab.state import (
     PREFERENCES_FILENAME,
     Preferences,
     YNABResources,
+    _atomic_write_json,
     merge_delta_into_records,
     save_preferences,
 )
@@ -90,6 +91,38 @@ def test_migration_handles_only_legacy_cache_present(tmp_path: Path) -> None:
     cache = _read_json(tmp_path / CATEGORY_CACHE_FILENAME)
     assert cache["b-1"]["last_refreshed"] is None
     assert cache["b-1"]["records"] == [{"id": "c-1", "name": "Rent"}]
+
+
+def test_atomic_write_json_failure_preserves_original_and_cleans_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed serialization leaves the previous file intact and no temp litter."""
+    import json as json_module
+
+    target = tmp_path / "state.json"
+    target.write_text(json.dumps({"old": True}), encoding="utf-8")
+    original = target.read_bytes()
+
+    def exploding_dump(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("serialization blew up")
+
+    monkeypatch.setattr(json_module, "dump", exploding_dump)
+
+    with pytest.raises(RuntimeError, match="serialization blew up"):
+        _atomic_write_json(target, {"new": True})
+
+    assert target.read_bytes() == original  # previous contents untouched
+    assert not [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]  # no temp litter
+
+
+def test_atomic_write_json_leaves_no_temp_after_success(tmp_path: Path) -> None:
+    """Temps are unique per write and removed after the atomic replace."""
+    target = tmp_path / "state.json"
+    _atomic_write_json(target, {"a": 1})
+    _atomic_write_json(target, {"a": 2})
+
+    assert _read_json(target) == {"a": 2}
+    assert [p for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
 
 
 # -- Public API preserved across the refactor ---------------------------------

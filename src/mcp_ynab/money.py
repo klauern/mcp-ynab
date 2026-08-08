@@ -57,6 +57,25 @@ USD = CurrencyInfo(
 USD_FALLBACK = USD
 
 
+def currency_info_or_none(currency_format: Any) -> Optional[CurrencyInfo]:
+    """Build ``CurrencyInfo`` from a YNAB ``currency_format``, or ``None``.
+
+    Accepts an SDK model, a dict, or an existing :class:`CurrencyInfo`.  Any
+    value whose ``iso_code`` is not a string (``None``, or an unconfigured
+    mock's auto-attribute) is rejected so callers can safely pass "whatever
+    the API returned" without risking garbage display values.
+    """
+    if currency_format is None or isinstance(currency_format, CurrencyInfo):
+        return currency_format if isinstance(currency_format, CurrencyInfo) else None
+    if isinstance(currency_format, dict):
+        if not isinstance(currency_format.get("iso_code"), str):
+            return None
+        return CurrencyInfo.from_currency_format(currency_format)
+    if isinstance(getattr(currency_format, "iso_code", None), str):
+        return CurrencyInfo.from_currency_format(currency_format)
+    return None
+
+
 def milliunits_to_decimal(milliunits: int) -> Decimal:
     """Convert an integer YNAB milliunit amount without floating-point loss."""
     return Decimal(milliunits) / Decimal(1000)

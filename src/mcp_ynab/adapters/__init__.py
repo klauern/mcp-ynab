@@ -33,12 +33,17 @@ from typing import (
 
 import mcp.types as types
 from mcp.server.fastmcp import Context
-from pydantic import Field, ValidationError
+from pydantic import Field
 from pydantic_core import to_jsonable_python
 
 from .. import server as _s
 from .. import errors as _errors
 from ..state import _load_json_file, merge_delta_into_records
+
+# Body keys that select an entity rather than updating it (SaveTransaction
+# path/import selectors).  Accepted for SDK shape fidelity but never counted
+# as an update field.
+_SELECTOR_FIELDS = frozenset({"id", "import_id"})
 
 # Resolve annotation constants through the server import cycle once.  Explicit
 # annotations keep mypy from needing the partially-initialized server module
@@ -55,14 +60,6 @@ TRANSACTIONS_CACHE_FILENAME = "transactions_delta.json"
 
 Body = Callable[..., Awaitable[dict[str, Any]]]
 BodyT = TypeVar("BodyT", bound=Body)
-
-
-def _json_body_annotation() -> Any:
-    """Return the annotated write-body type used in generated tool schemas."""
-    return Annotated[
-        Dict[str, Any],
-        Field(description="JSON-compatible request body matching the YNAB SDK model."),
-    ]
 
 
 def _cache_file() -> Path:
@@ -83,6 +80,21 @@ def _cached_transaction_records(cache_file: Path, plan_id: str) -> list[dict[str
     if not isinstance(records, list):
         return []
     return [record for record in records if isinstance(record, dict)]
+
+
+def _has_cached_transaction_records(cache_file: Path, plan_id: str) -> bool:
+    """Return whether a usable cache baseline exists for ``plan_id``.
+
+    A missing file, a corrupt file, or a missing ``plan_id`` key means there is
+    no baseline to merge a delta against — a delta-only response would silently
+    discard untouched cached records, so callers must fall back to a full fetch.
+    """
+    if not cache_file.exists():
+        return False
+    cached = _load_json_file(cache_file)
+    if not isinstance(cached, dict) or not isinstance(cached.get(plan_id), list):
+        return False
+    return True
 
 
 def _persist_transaction_delta(
@@ -147,46 +159,50 @@ def _construct_body_wrapper(body_wrapper: str, body: dict[str, Any]) -> Any:
     """Validate a body and adapt flat SDK save fields to a put wrapper.
 
     SDK 4.3's ``PutTransactionWrapper`` has the shape
-    ``{"transaction": ExistingTransaction(...)}``, while the useful public
+    ``{"transaction": ExistingTransaction(...)}`` while the useful public
     adapter body is the flat ``SaveTransactionWithIdOrImportId`` field shape.
     Nested ``{"transaction": {...}}`` bodies remain accepted for fidelity to
-    the SDK.  Flat bodies are validated through the wrapper's inner SDK model;
-    ``id`` and ``import_id`` are path/import selectors and are consequently
-    ignored by ``ExistingTransaction`` when the path already supplies an id.
+    the SDK.  ``id``/``import_id`` are accepted as path/import selectors but
+    are not update fields.  Unknown keys are rejected (Pydantic would
+    otherwise silently ignore them) and a body with nothing to update is
+    rejected before any client or network construction.
     """
     wrapper_type = getattr(_s, body_wrapper)
-    try:
+    fields = getattr(wrapper_type, "model_fields", {})
+    if len(fields) != 1:
+        # Unusual wrapper shape: let the SDK model do its own validation.
         return wrapper_type(**body)
-    except ValidationError as direct_error:
-        fields = getattr(wrapper_type, "model_fields", {})
-        if len(fields) != 1:
-            raise direct_error
+    field_name = next(iter(fields))
+    inner_type = getattr(_s, "ExistingTransaction", None)
+    if inner_type is None:
+        raise ValueError(f"{body_wrapper} wraps an unknown inner model")
+    inner_fields = getattr(inner_type, "model_fields", {})
+    update_keys = set(inner_fields) | {
+        alias for field in inner_fields.values() if (alias := field.alias)
+    }
+    valid_keys = update_keys | _SELECTOR_FIELDS
 
-        field_name = next(iter(fields))
-        inner_type = getattr(_s, "ExistingTransaction", None)
-        if inner_type is None:
-            raise direct_error
+    if field_name in body:
+        unknown = set(body) - {field_name}
+        if unknown:
+            raise ValueError(f"Unknown body field(s): {sorted(unknown)}")
+        inner_payload = body[field_name]
+        if not isinstance(inner_payload, dict):
+            raise ValueError(f"body[{field_name!r}] must be a JSON object")
+        unknown = set(inner_payload) - valid_keys
+        if unknown:
+            raise ValueError(f"Unknown body field(s) for {field_name!r}: {sorted(unknown)}")
+        payload = {key: value for key, value in inner_payload.items() if key in update_keys}
+    else:
+        unknown = set(body) - valid_keys
+        if unknown:
+            raise ValueError(f"Unknown body field(s): {sorted(unknown)}")
+        payload = {key: value for key, value in body.items() if key in update_keys}
 
-        save_type = getattr(_s, "SaveTransactionWithIdOrImportId", None)
-        if save_type is not None:
-            # Some server revisions re-export this model; use it when present
-            # to validate flat id/import_id fields before adapting to PUT's
-            # ExistingTransaction payload.
-            validated_save = save_type(**body)
-            body = validated_save.model_dump(by_alias=True, exclude_none=True)
-
-        inner_fields = getattr(inner_type, "model_fields", {})
-        inner_payload = {
-            key: value
-            for key, value in body.items()
-            if key in inner_fields
-            or any(getattr(field, "alias", None) == key for field in inner_fields.values())
-        }
-        try:
-            inner = inner_type(**inner_payload)
-            return wrapper_type(**{field_name: inner})
-        except ValidationError:
-            raise direct_error from None
+    inner = inner_type(**payload)
+    if not inner.model_dump(exclude_none=True):
+        raise ValueError("body must include at least one field to update")
+    return wrapper_type(**{field_name: inner})
 
 
 def _body_parameter_name(method: Callable[..., Any], provided: Mapping[str, Any]) -> str:
@@ -330,9 +346,15 @@ async def api_get_transactions(
     """Return transactions and round-trip the YNAB transaction knowledge token."""
     del client, ctx
     persisted_knowledge = _s.ynab_resources.get_knowledge(plan_id, TRANSACTIONS_RESOURCE)
-    effective_knowledge = (
-        persisted_knowledge if last_knowledge_of_server is None else last_knowledge_of_server
-    )
+    effective_knowledge = None
+    if persisted_knowledge is not None and _has_cached_transaction_records(_cache_file(), plan_id):
+        # Delta mode requires a cache baseline to merge against; without one, a
+        # delta-only response would discard untouched records.  Fall back to a
+        # full fetch (which replaces the cache) when knowledge exists but the
+        # baseline is missing or corrupt.
+        effective_knowledge = persisted_knowledge
+    if last_knowledge_of_server is not None:
+        effective_knowledge = last_knowledge_of_server
     return {
         "plan_id": plan_id,
         "since_date": since_date,

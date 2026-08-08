@@ -252,6 +252,87 @@ async def test_update_transaction_requires_body_before_client_or_network(
     monkeypatch.setattr(server, "get_ynab_client", get_client)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"bogus": 1},  # unknown key must not be silently ignored by Pydantic
+        {},  # nothing to update
+        {"id": "txn-1"},  # selector keys alone are not an update
+        {"transaction": {"bogus": 1}},  # nested unknown keys rejected too
+    ],
+)
+async def test_update_transaction_rejects_invalid_bodies_before_network(
+    mock_ynab_apis: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, body: dict
+) -> None:
+    called = False
+
+    async def fail_if_client_constructed() -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("client must not be constructed for an invalid body")
+
+    monkeypatch.setattr(server, "get_ynab_client", fail_if_client_constructed)
+
+    with pytest.raises(ValueError):
+        await api_update_transaction(plan_id="budget-1", transaction_id="txn-1", body=body)
+
+    assert called is False
+    assert mock_ynab_apis.transactions.update_transaction.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_delta_without_cache_baseline_forces_full_fetch(
+    mock_ynab_apis: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Knowledge without a cache baseline must NOT advance from a delta-only fetch."""
+    resources = _resource(tmp_path, monkeypatch)
+    resources.set_knowledge("budget-1", "transactions", 10)
+    # Note: transactions_delta.json deliberately missing.
+
+    response = _transactions_response(_transaction("txn-1"), knowledge=11)
+    mock_ynab_apis.transactions.get_transactions.return_value = response
+
+    result = await api_get_transactions(plan_id="budget-1")
+
+    # No baseline -> full fetch (no knowledge token), so the cache is REPLACED
+    # with the complete records instead of a delta merge that would lose data.
+    mock_ynab_apis.transactions.get_transactions.assert_called_once_with(
+        plan_id="budget-1",
+        since_date=None,
+        until_date=None,
+        type=None,
+        last_knowledge_of_server=None,
+    )
+    assert result["server_knowledge"] == 11
+    cache_file = tmp_path / adapters.TRANSACTIONS_CACHE_FILENAME
+    assert json.loads(cache_file.read_text())["budget-1"] == result["transactions"]
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_corrupt_cache_forces_full_fetch(
+    mock_ynab_apis: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resources = _resource(tmp_path, monkeypatch)
+    resources.set_knowledge("budget-1", "transactions", 10)
+    cache_file = tmp_path / adapters.TRANSACTIONS_CACHE_FILENAME
+    cache_file.write_text("not json at all")
+
+    mock_ynab_apis.transactions.get_transactions.return_value = _transactions_response(
+        _transaction("txn-1"), knowledge=12
+    )
+
+    await api_get_transactions(plan_id="budget-1")
+
+    mock_ynab_apis.transactions.get_transactions.assert_called_once_with(
+        plan_id="budget-1",
+        since_date=None,
+        until_date=None,
+        type=None,
+        last_knowledge_of_server=None,
+    )
+
+
 def test_adapter_tools_are_registered_with_canonical_names() -> None:
     tools = server.mcp._tool_manager._tools
 

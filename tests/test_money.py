@@ -5,7 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from mcp_ynab.date_bounds import utc_now, utc_today
-from mcp_ynab.money import CurrencyInfo, decimal_to_milliunits, format_money, milliunits_to_decimal
+from mcp_ynab.money import (
+    CurrencyInfo,
+    currency_info_or_none,
+    decimal_to_milliunits,
+    format_money,
+    milliunits_to_decimal,
+)
 from mcp_ynab.tools import budgeting, transactions
 
 
@@ -52,6 +58,29 @@ def test_currency_info_reads_sdk_currency_symbol() -> None:
     )
 
     assert format_money(123_456, currency) == "123,46 €"
+
+
+def test_currency_info_or_none_accepts_models_dicts_and_rejects_garbage() -> None:
+    assert currency_info_or_none(None) is None
+    assert currency_info_or_none(CurrencyInfo.from_currency_format(None)).iso_code == "USD"
+
+    as_dict = {
+        "iso_code": "BHD",
+        "decimal_digits": 3,
+        "currency_symbol": "BD",
+        "symbol_first": True,
+        "display_symbol": True,
+        "decimal_separator": ".",
+        "group_separator": ",",
+    }
+    assert currency_info_or_none(as_dict).iso_code == "BHD"
+
+    # An unconfigured mock's auto-attributes (iso_code is a MagicMock, not a
+    # str) must be rejected, not rendered into user-visible output.
+    from unittest.mock import MagicMock
+
+    assert currency_info_or_none(MagicMock()) is None
+    assert currency_info_or_none(SimpleNamespace(iso_code=None)) is None
 
 
 def test_default_usd_format_is_compatible() -> None:

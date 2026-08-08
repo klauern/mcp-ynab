@@ -21,6 +21,7 @@ from ynab.models.save_payee import SavePayee
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 
 from .. import server as _s
+from ..date_bounds import ALL_HISTORY_SINCE_DATE
 from ..formatters import (
     _build_markdown_table,
     _format_accounts_output,
@@ -510,7 +511,12 @@ async def merge_payees(
     moved_ids: List[str] = []
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
-        response = transactions_api.get_transactions_by_payee(budget_id, source_payee_id)
+        # Explicit all-history bound: omitting since_date would make the API
+        # silently truncate to one year ago, leaving older transactions on the
+        # source payee unmerged while the tool reports a complete result.
+        response = transactions_api.get_transactions_by_payee(
+            budget_id, source_payee_id, since_date=ALL_HISTORY_SINCE_DATE
+        )
         source_txns = response.data.transactions or []
         txn_ids = [getattr(t, "id", None) for t in source_txns]
         txn_ids = [tid for tid in txn_ids if tid]
@@ -529,6 +535,9 @@ async def merge_payees(
     markdown += (
         f"Moved **{len(moved_ids)}** transaction(s) from payee `{source_payee_id}` "
         f"to payee `{destination_payee_id}` in budget `{budget_id}`.\n\n"
+    )
+    markdown += (
+        f"- Transactions scanned: all history (since {ALL_HISTORY_SINCE_DATE.isoformat()})\n"
     )
     if delete_source:
         markdown += (

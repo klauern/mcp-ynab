@@ -203,8 +203,8 @@ def _format_accounts_output(
         decimal_to_milliunits(output["summary"]["net_worth_raw"]), currency
     )
 
-    for group in output["accounts"]:
-        for account in group["accounts"]:
+    for group_data in output["accounts"]:
+        for account in group_data["accounts"]:
             account.pop("balance_milliunits", None)
 
     return output

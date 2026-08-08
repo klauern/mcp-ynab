@@ -40,6 +40,13 @@ from .. import server as _s
 from .. import errors as _errors
 from ..state import _load_json_file, merge_delta_into_records
 
+# Resolve annotation constants through the server import cycle once.  Explicit
+# annotations keep mypy from needing the partially-initialized server module
+# when this package is imported from server.py's own body (import cycle: mypy
+# cannot determine the RHS type until server.py finishes analyzing).
+_READ_ONLY: types.ToolAnnotations = _s.READ_ONLY_TOOL  # type: ignore[has-type]
+_MUTATING: types.ToolAnnotations = _s.MUTATING_TOOL  # type: ignore[has-type]
+
 
 READ_MAX_ATTEMPTS = 3
 READ_BASE_DELAY = 0.5
@@ -216,7 +223,7 @@ def api_adapter(
     api: str,
     method: str,
     body_wrapper: Optional[str] = None,
-    annotations: types.ToolAnnotations = _s.READ_ONLY_TOOL,
+    annotations: Optional[types.ToolAnnotations] = None,
 ) -> Callable[[BodyT], BodyT]:
     """Decorate an SDK operation body as the canonical ``api_`` MCP tool.
 
@@ -231,6 +238,7 @@ def api_adapter(
         raise ValueError("operation_id must not be empty")
 
     def decorator(body: BodyT) -> BodyT:
+        resolved_annotations = annotations if annotations is not None else _READ_ONLY
         body_signature = inspect.signature(body)
         body_parameters = list(body_signature.parameters.values())
         if not body_parameters or body_parameters[0].name != "client":
@@ -269,7 +277,7 @@ def api_adapter(
                     call_kwargs[_body_parameter_name(sdk_method, call_kwargs)] = validated_body
 
                 try:
-                    if annotations.readOnlyHint is True:
+                    if resolved_annotations.readOnlyHint is True:
                         response = _errors.run_with_retry(
                             lambda: sdk_method(**call_kwargs),
                             idempotent=True,
@@ -295,7 +303,7 @@ def api_adapter(
         tool.__qualname__ = f"api_{operation_id}"
         registered = _s.mcp.tool(
             name=f"api_{operation_id}",
-            annotations=annotations,
+            annotations=resolved_annotations,
             structured_output=True,
         )(tool)
         return registered  # type: ignore[return-value]
@@ -307,7 +315,7 @@ def api_adapter(
     "get_transactions",
     api="TransactionsApi",
     method="get_transactions",
-    annotations=_s.READ_ONLY_TOOL,
+    annotations=_READ_ONLY,
 )
 async def api_get_transactions(
     client: Any,
@@ -339,7 +347,7 @@ async def api_get_transactions(
     api="TransactionsApi",
     method="update_transaction",
     body_wrapper="PutTransactionWrapper",
-    annotations=_s.MUTATING_TOOL,
+    annotations=_MUTATING,
 )
 async def api_update_transaction(
     client: Any,

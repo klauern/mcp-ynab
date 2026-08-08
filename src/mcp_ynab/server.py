@@ -149,6 +149,7 @@ async def _resolve_budget_id(client: ApiClient, ctx: Optional[Context]) -> str:
 from . import prompts  # noqa: E402, F401
 from . import resources  # noqa: E402, F401
 from .tools import budgeting, code_mode, preferences, transactions  # noqa: E402, F401
+from . import adapters  # noqa: E402, F401
 
 # Re-export tool and resource callables so `server.<tool>(...)` works for
 # tests and downstream code. The decorators above are what register the
@@ -187,6 +188,11 @@ from .tools.budgeting import (  # noqa: E402, F401
 )
 from .tools.budgeting import (  # noqa: E402, F401
     spending_by_payee as spending_by_payee_tool,
+)
+from .adapters import (  # noqa: E402, F401
+    api_adapter,
+    api_get_transactions,
+    api_update_transaction,
 )
 from .tools.preferences import (  # noqa: E402, F401
     clear_api_key,

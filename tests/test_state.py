@@ -13,11 +13,13 @@ import pytest
 from mcp_ynab import server
 from mcp_ynab.state import (
     CATEGORY_CACHE_FILENAME,
+    KNOWLEDGE_FILENAME,
     LEGACY_CATEGORY_CACHE_FILENAME,
     LEGACY_PREFERRED_BUDGET_FILENAME,
     PREFERENCES_FILENAME,
     Preferences,
     YNABResources,
+    merge_delta_into_records,
     save_preferences,
 )
 
@@ -524,3 +526,124 @@ async def test_set_preference_code_mode_max_output_chars_int(
 
     await server.set_preference("code_mode_max_output_chars", "4096")
     assert isolated.preferences.code_mode_max_output_chars == 4096
+
+
+# -- Knowledge tokens and delta merge -----------------------------------------
+
+
+def test_knowledge_round_trip_is_independent_per_budget_and_resource(tmp_path: Path) -> None:
+    """Knowledge tokens are scoped to each budget/resource pair."""
+    resources = YNABResources(config_dir=tmp_path)
+
+    resources.set_knowledge("budget-a", "transactions", 12)
+    resources.set_knowledge("budget-a", "accounts", 7)
+    resources.set_knowledge("budget-b", "transactions", 99)
+
+    assert resources.get_knowledge("budget-a", "transactions") == 12
+    assert resources.get_knowledge("budget-a", "accounts") == 7
+    assert resources.get_knowledge("budget-b", "transactions") == 99
+    assert resources.get_knowledge("budget-b", "accounts") is None
+
+    reloaded = YNABResources(config_dir=tmp_path)
+    assert reloaded.get_knowledge("budget-a", "transactions") == 12
+
+
+def test_knowledge_is_separate_from_preferences(tmp_path: Path) -> None:
+    """Writing runtime knowledge does not rewrite the typed preferences file."""
+    resources = YNABResources(config_dir=tmp_path)
+    resources.set_preferred_budget_id("budget-a")
+    preferences_before = (tmp_path / PREFERENCES_FILENAME).read_bytes()
+
+    resources.set_knowledge("budget-a", "transactions", 42)
+
+    assert (tmp_path / PREFERENCES_FILENAME).read_bytes() == preferences_before
+    assert _read_json(tmp_path / KNOWLEDGE_FILENAME) == {"budget-a": {"transactions": 42}}
+
+
+def test_merge_delta_upserts_removes_tombstones_and_preserves_untouched() -> None:
+    """Delta records replace by id, tombstones remove, and absent records survive."""
+    existing = [
+        {"id": "keep", "name": "Keep"},
+        {"id": "change", "name": "Old"},
+        {"id": "remove", "name": "Gone"},
+        {"name": "No id"},
+    ]
+    delta = [
+        {"id": "change", "name": "New"},
+        {"id": "remove", "deleted": True},
+        {"id": "added", "name": "Added"},
+    ]
+
+    merged = merge_delta_into_records(existing, delta)
+
+    assert merged == [
+        {"id": "keep", "name": "Keep"},
+        {"id": "change", "name": "New"},
+        {"name": "No id"},
+        {"id": "added", "name": "Added"},
+    ]
+    assert existing[1]["name"] == "Old"
+
+
+def test_merge_delta_without_id_is_preserved_and_empty_delta_is_unchanged() -> None:
+    """Defensive records without ids are retained, including when supplied by a delta."""
+    existing = [{"id": "one", "name": "One"}, {"name": "opaque"}]
+
+    assert merge_delta_into_records(existing, []) == existing
+    assert merge_delta_into_records(existing, [{"name": "delta opaque"}]) == [
+        *existing,
+        {"name": "delta opaque"},
+    ]
+
+
+def test_commit_knowledge_and_records_writes_both_files(tmp_path: Path) -> None:
+    """A successful commit persists the complete records and its new token."""
+    resources = YNABResources(config_dir=tmp_path)
+    records_file = tmp_path / "transactions_cache.json"
+    records = [{"id": "txn-1", "amount": 100}]
+
+    resources.commit_knowledge_and_records("budget-a", "transactions", records, 17, records_file)
+
+    assert _read_json(records_file) == {"budget-a": records}
+    assert resources.get_knowledge("budget-a", "transactions") == 17
+    assert _read_json(tmp_path / KNOWLEDGE_FILENAME) == {"budget-a": {"transactions": 17}}
+
+
+def test_commit_write_failure_does_not_advance_knowledge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed record write leaves the prior token and both on-disk files unchanged."""
+    import mcp_ynab.state as state
+
+    resources = YNABResources(config_dir=tmp_path)
+    resources.set_knowledge("budget-a", "transactions", 3)
+    records_file = tmp_path / "transactions_cache.json"
+    records_file.write_text(json.dumps({"budget-a": [{"id": "old"}]}), encoding="utf-8")
+    old_knowledge = (tmp_path / KNOWLEDGE_FILENAME).read_bytes()
+    old_records = records_file.read_bytes()
+
+    def fail_write(*args: Any, **kwargs: Any) -> None:
+        raise OSError("simulated atomic-write failure")
+
+    monkeypatch.setattr(state, "_atomic_write_json", fail_write)
+    with pytest.raises(OSError, match="simulated atomic-write failure"):
+        resources.commit_knowledge_and_records(
+            "budget-a", "transactions", [{"id": "new"}], 4, records_file
+        )
+
+    assert resources.get_knowledge("budget-a", "transactions") == 3
+    assert (tmp_path / KNOWLEDGE_FILENAME).read_bytes() == old_knowledge
+    assert records_file.read_bytes() == old_records
+
+
+def test_corrupt_knowledge_file_degrades_to_empty_with_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Malformed knowledge JSON is recoverable just like other state files."""
+    (tmp_path / KNOWLEDGE_FILENAME).write_text("{not json", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        resources = YNABResources(config_dir=tmp_path)
+
+    assert resources.get_knowledge("budget-a", "transactions") is None
+    assert "Failed to decode JSON" in caplog.text

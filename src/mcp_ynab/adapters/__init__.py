@@ -85,16 +85,18 @@ def _cached_transaction_records(cache_file: Path, plan_id: str) -> list[dict[str
 def _has_cached_transaction_records(cache_file: Path, plan_id: str) -> bool:
     """Return whether a usable cache baseline exists for ``plan_id``.
 
-    A missing file, a corrupt file, or a missing ``plan_id`` key means there is
-    no baseline to merge a delta against — a delta-only response would silently
-    discard untouched cached records, so callers must fall back to a full fetch.
+    A missing file, a corrupt file, a missing ``plan_id`` key, or a list
+    containing malformed (non-dict) records means there is no baseline to merge
+    a delta against — a delta-only response would silently discard untouched
+    cached records, so callers must fall back to a full fetch.
     """
     if not cache_file.exists():
         return False
     cached = _load_json_file(cache_file)
-    if not isinstance(cached, dict) or not isinstance(cached.get(plan_id), list):
+    records = cached.get(plan_id) if isinstance(cached, dict) else None
+    if not isinstance(records, list) or not records:
         return False
-    return True
+    return all(isinstance(record, dict) for record in records)
 
 
 def _persist_transaction_delta(
@@ -346,15 +348,16 @@ async def api_get_transactions(
     """Return transactions and round-trip the YNAB transaction knowledge token."""
     del client, ctx
     persisted_knowledge = _s.ynab_resources.get_knowledge(plan_id, TRANSACTIONS_RESOURCE)
+    # Delta mode requires a valid cache baseline to merge against; without one,
+    # a delta-only response would discard untouched records.  An explicit token
+    # is honored only when a baseline exists; otherwise fall back to a full
+    # fetch (which replaces the cache and its knowledge).
+    has_baseline = _has_cached_transaction_records(_cache_file(), plan_id)
     effective_knowledge = None
-    if persisted_knowledge is not None and _has_cached_transaction_records(_cache_file(), plan_id):
-        # Delta mode requires a cache baseline to merge against; without one, a
-        # delta-only response would discard untouched records.  Fall back to a
-        # full fetch (which replaces the cache) when knowledge exists but the
-        # baseline is missing or corrupt.
-        effective_knowledge = persisted_knowledge
-    if last_knowledge_of_server is not None:
+    if last_knowledge_of_server is not None and has_baseline:
         effective_knowledge = last_knowledge_of_server
+    elif persisted_knowledge is not None and has_baseline:
+        effective_knowledge = persisted_knowledge
     return {
         "plan_id": plan_id,
         "since_date": since_date,

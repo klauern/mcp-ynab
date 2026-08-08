@@ -82,6 +82,20 @@ def test_currency_info_or_none_accepts_models_dicts_and_rejects_garbage() -> Non
     assert currency_info_or_none(MagicMock()) is None
     assert currency_info_or_none(SimpleNamespace(iso_code=None)) is None
 
+    # Partial malformation: a string iso_code with a MagicMock symbol must also
+    # be rejected (from_currency_format would otherwise str()-coerce the mock
+    # into a garbage display symbol).
+    partially_bad = SimpleNamespace(
+        iso_code="BHD",
+        decimal_digits=3,
+        currency_symbol=MagicMock(),
+        symbol_first=True,
+        display_symbol=True,
+        decimal_separator=".",
+        group_separator=",",
+    )
+    assert currency_info_or_none(partially_bad) is None
+
 
 def test_default_usd_format_is_compatible() -> None:
     assert format_money(1_234_560) == "$1,234.56"

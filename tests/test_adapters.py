@@ -333,6 +333,54 @@ async def test_get_transactions_corrupt_cache_forces_full_fetch(
     )
 
 
+@pytest.mark.asyncio
+async def test_get_transactions_explicit_token_without_baseline_forces_full_fetch(
+    mock_ynab_apis: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicitly supplied knowledge token is only honored with a baseline."""
+    _resource(tmp_path, monkeypatch)
+    # No cache file at all.
+
+    mock_ynab_apis.transactions.get_transactions.return_value = _transactions_response(
+        _transaction("txn-1"), knowledge=11
+    )
+
+    await api_get_transactions(plan_id="budget-1", last_knowledge_of_server=7)
+
+    mock_ynab_apis.transactions.get_transactions.assert_called_once_with(
+        plan_id="budget-1",
+        since_date=None,
+        until_date=None,
+        type=None,
+        last_knowledge_of_server=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_transactions_malformed_cache_records_forces_full_fetch(
+    mock_ynab_apis: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A baseline containing non-dict records is not a safe merge target."""
+    resources = _resource(tmp_path, monkeypatch)
+    resources.set_knowledge("budget-1", "transactions", 10)
+    cache_file = tmp_path / adapters.TRANSACTIONS_CACHE_FILENAME
+    cache_file.write_text(json.dumps({"budget-1": [{"id": "txn-1"}, "garbage"]}))
+
+    mock_ynab_apis.transactions.get_transactions.return_value = _transactions_response(
+        _transaction("txn-1"), knowledge=13
+    )
+
+    await api_get_transactions(plan_id="budget-1")
+
+    mock_ynab_apis.transactions.get_transactions.assert_called_once_with(
+        plan_id="budget-1",
+        since_date=None,
+        until_date=None,
+        type=None,
+        last_knowledge_of_server=None,
+    )
+
+
 def test_adapter_tools_are_registered_with_canonical_names() -> None:
     tools = server.mcp._tool_manager._tools
 

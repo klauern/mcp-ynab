@@ -60,20 +60,41 @@ USD_FALLBACK = USD
 def currency_info_or_none(currency_format: Any) -> Optional[CurrencyInfo]:
     """Build ``CurrencyInfo`` from a YNAB ``currency_format``, or ``None``.
 
-    Accepts an SDK model, a dict, or an existing :class:`CurrencyInfo`.  Any
-    value whose ``iso_code`` is not a string (``None``, or an unconfigured
-    mock's auto-attribute) is rejected so callers can safely pass "whatever
-    the API returned" without risking garbage display values.
+    Accepts an SDK model, a dict, or an existing :class:`CurrencyInfo`.  Raw
+    fields are validated *before* :meth:`CurrencyInfo.from_currency_format`
+    coerces them, so a partially malformed value (e.g. an unconfigured mock
+    whose ``iso_code`` happens to be a string but whose ``symbol`` is an
+    auto-attribute) is rejected instead of leaking garbage into display output.
     """
     if currency_format is None or isinstance(currency_format, CurrencyInfo):
         return currency_format if isinstance(currency_format, CurrencyInfo) else None
     if isinstance(currency_format, dict):
-        if not isinstance(currency_format.get("iso_code"), str):
+        source: Any = currency_format
+    elif hasattr(currency_format, "iso_code"):
+        source = currency_format
+    else:
+        return None
+
+    def raw(name: str, fallback: Any = None) -> Any:
+        if isinstance(source, dict):
+            return source.get(name, fallback)
+        return getattr(source, name, fallback)
+
+    iso = raw("iso_code")
+    symbol = raw("symbol", raw("currency_symbol"))
+    digits = raw("decimal_digits")
+    if not isinstance(iso, str) or not isinstance(symbol, str) or not isinstance(digits, int):
+        return None
+    for name, expected in (
+        ("decimal_separator", str),
+        ("group_separator", str),
+        ("symbol_first", bool),
+        ("display_symbol", bool),
+    ):
+        value = raw(name)
+        if value is not None and not isinstance(value, expected):
             return None
-        return CurrencyInfo.from_currency_format(currency_format)
-    if isinstance(getattr(currency_format, "iso_code", None), str):
-        return CurrencyInfo.from_currency_format(currency_format)
-    return None
+    return CurrencyInfo.from_currency_format(source)
 
 
 def milliunits_to_decimal(milliunits: int) -> Decimal:

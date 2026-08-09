@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,9 @@ def install_dry_run_interceptor(mcp: Any) -> None:
         if getattr(tool, "_dry_run_intercepted", False):
             continue
 
+        original = tool.fn
+
+        @wraps(original)
         async def record(*args: Any, _tool_name: str = tool_name, **kwargs: Any) -> dict[str, Any]:
             # FastMCP / Code Mode may inject Context. It is transport state,
             # not part of the intended YNAB request, and is not JSON serializable.

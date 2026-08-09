@@ -494,7 +494,7 @@ async def get_transactions_needing_attention(
 
         markdown += "**Filters Applied:**\n"
         markdown += f"- Filter type: {filter_type}\n"
-        if days_back:
+        if days_back is not None:
             markdown += f"- Looking back {days_back} days\n"
         else:
             markdown += f"- Looking back: all history (since {since_date.isoformat()})\n"
@@ -1188,7 +1188,7 @@ async def create_scheduled_transaction(
     `amount` is in dollars; negative values are outflows (expenses), positive
     are inflows (income). The value is converted to milliunits internally.
 
-    `start_date` is an ISO date string (YYYY-MM-DD); defaults to today.
+    `start_date` is an ISO date string (YYYY-MM-DD); defaults to tomorrow in UTC.
 
     Valid `frequency` values: never, daily, weekly, everyOtherWeek,
     twiceAMonth, every4Weeks, monthly, everyOtherMonth, every3Months,

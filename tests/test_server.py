@@ -90,6 +90,13 @@ def test_format_accounts_output_classifies_all_13_types() -> None:
     assert formatted["summary"]["net_worth"] == "-$500.00"
 
 
+def test_format_accounts_output_counts_positive_liability_as_net_worth_credit() -> None:
+    formatted = server._format_accounts_output([_account("Credit", "lineOfCredit", 100_000)])
+
+    assert formatted["summary"]["total_liabilities"] == "$0.00"
+    assert formatted["summary"]["net_worth"] == "$100.00"
+
+
 def test_format_accounts_output_keeps_unknown_future_types_visible() -> None:
     formatted = server._format_accounts_output(
         [

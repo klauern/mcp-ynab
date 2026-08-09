@@ -237,7 +237,9 @@ async def drive_prompt(
     """
     driver = current_driver()
     if driver == "agent-sdk":
-        return await _drive_via_agent_sdk(prompt, model=model)
+        return await _drive_via_agent_sdk(
+            prompt, model=model, server_env_overrides=server_env_overrides
+        )
     if driver == "messages-api":
         return await _drive_via_messages_api(
             prompt,
@@ -360,12 +362,16 @@ def _subscription_env() -> dict[str, str]:
     return env
 
 
-def agent_sdk_options(model: str) -> Any:
+def agent_sdk_options(model: str, *, server_env_overrides: dict[str, str] | None = None) -> Any:
     """Build ClaudeAgentOptions for the subscription-auth Agent SDK driver."""
     from claude_agent_sdk import ClaudeAgentOptions
 
     command = os.getenv("EVAL_MCP_COMMAND", sys.executable)
     args = json.loads(os.getenv("EVAL_MCP_ARGS", '["-m", "mcp_ynab"]'))
+
+    server_env = dict(os.environ)
+    if server_env_overrides:
+        server_env.update(server_env_overrides)
 
     return ClaudeAgentOptions(
         model=model,
@@ -374,7 +380,7 @@ def agent_sdk_options(model: str) -> Any:
                 "type": "stdio",
                 "command": command,
                 "args": args,
-                "env": dict(os.environ),
+                "env": server_env,
             }
         },
         # Only the Code Mode tools may run; dontAsk denies anything unlisted
@@ -391,7 +397,12 @@ def agent_sdk_options(model: str) -> Any:
     )
 
 
-async def _drive_via_agent_sdk(prompt: str, *, model: str) -> EvalRun:
+async def _drive_via_agent_sdk(
+    prompt: str,
+    *,
+    model: str,
+    server_env_overrides: dict[str, str] | None = None,
+) -> EvalRun:
     """Drive ``prompt`` with the Claude Agent SDK (subscription auth)."""
     from claude_agent_sdk import (
         AssistantMessage,
@@ -401,7 +412,9 @@ async def _drive_via_agent_sdk(prompt: str, *, model: str) -> EvalRun:
     )
 
     run = EvalRun()
-    async with ClaudeSDKClient(options=agent_sdk_options(model)) as client:
+    async with ClaudeSDKClient(
+        options=agent_sdk_options(model, server_env_overrides=server_env_overrides)
+    ) as client:
         await client.query(prompt)
         async for message in client.receive_response():
             if not isinstance(message, AssistantMessage):

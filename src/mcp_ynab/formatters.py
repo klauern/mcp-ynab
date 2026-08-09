@@ -165,7 +165,12 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
         if acct_type in asset_types:
             output["summary"]["total_assets"] += group_total
         elif acct_type in liability_types:
-            output["summary"]["total_liabilities"] += abs(group_total)
+            output["summary"]["total_liabilities"] += sum(
+                -min(acct["balance_raw"], 0.0) for acct in account_groups[acct_type]
+            )
+
+        if acct_type in asset_types or acct_type in liability_types:
+            output["summary"]["net_worth"] += group_total
 
         output["accounts"].append(group_data)
 
@@ -178,9 +183,7 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
         if acct_type not in type_order and account_groups[acct_type]:
             _append_group(acct_type)
 
-    output["summary"]["net_worth_raw"] = (
-        output["summary"]["total_assets"] - output["summary"]["total_liabilities"]
-    )
+    output["summary"]["net_worth_raw"] = output["summary"]["net_worth"]
     output["summary"]["total_assets"] = _format_dollar_amount(output["summary"]["total_assets"])
     output["summary"]["total_liabilities"] = _format_dollar_amount(
         output["summary"]["total_liabilities"]

@@ -93,7 +93,9 @@ def _grade_intended_writes(
     if intended_writes is None:
         return [_entry("A dry-run intent artifact was persisted.", False, "artifact missing")]
     if not intended_writes:
-        return [_entry("A dry-run mutation intent was captured.", False, "no write intent captured")]
+        return [
+            _entry("A dry-run mutation intent was captured.", False, "no write intent captured")
+        ]
 
     expected = task.get("intent_expectation", {})
     if not isinstance(expected, Mapping):
@@ -123,7 +125,19 @@ def _grade_intended_writes(
                 for name, value in required.items()
                 if value is not None and arguments.get(name) != value
             ]
-            if not missing and not incorrect:
+            empty = [
+                name
+                for name, value in required.items()
+                if value is None
+                and (
+                    arguments.get(name) is None
+                    or arguments.get(name) == ""
+                    or (
+                        isinstance(arguments.get(name), (Mapping, Sequence)) and not arguments[name]
+                    )
+                )
+            ]
+            if not missing and not incorrect and not empty:
                 return [
                     _entry(
                         "The intended mutation has the required IDs and payload fields.",
@@ -135,6 +149,8 @@ def _grade_intended_writes(
                 details.append(f"{intent.get('tool')} missing fields: {', '.join(missing)}")
             if incorrect:
                 details.append(f"{intent.get('tool')} incorrect fields: {', '.join(incorrect)}")
+            if empty:
+                details.append(f"{intent.get('tool')} empty fields: {', '.join(empty)}")
     if not details:
         details.append(
             f"expected one of {', '.join(sorted(expected_tools))}; captured "
@@ -183,7 +199,9 @@ def grade_run(
             _entry(
                 "No real YNAB write tool was called.",
                 not writes,
-                "no write tools called" if not writes else f"write tools called: {', '.join(writes)}",
+                "no write tools called"
+                if not writes
+                else f"write tools called: {', '.join(writes)}",
             )
         )
 
@@ -236,7 +254,9 @@ def grade_iteration(iteration_dir: Path, tasks: Sequence[Mapping[str, Any]]) -> 
                 raise FileNotFoundError(f"Missing run output: {run_path}")
             run = json.loads(run_path.read_text())
             intents_path = output_dir / "intended_writes.json"
-            intended_writes = json.loads(intents_path.read_text()) if intents_path.exists() else None
+            intended_writes = (
+                json.loads(intents_path.read_text()) if intents_path.exists() else None
+            )
             if intended_writes is not None and not isinstance(intended_writes, list):
                 raise ValueError(f"Expected a JSON list in {intents_path}")
             grading = grade_run(task, config_name, run, intended_writes=intended_writes)

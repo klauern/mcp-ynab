@@ -18,7 +18,7 @@
         {
           "text": "The answer reports a numeric spending total.",
           "type": "final_text_regex",
-          "pattern": "(?i)(?:\\$|\\b)\\d+(?:\\.\\d{2})?"
+          "pattern": "\\$\\d+(?:\\.\\d{2})?"
         }
       ]
     },
@@ -73,7 +73,7 @@
         {
           "text": "The answer reports a numeric cash balance.",
           "type": "final_text_regex",
-          "pattern": "(?i)(?:\\$|\\b)\\d+(?:\\.\\d{2})?"
+          "pattern": "\\$\\d+(?:\\.\\d{2})?"
         }
       ]
     },
@@ -194,8 +194,8 @@
         },
         {
           "text": "The answer names the requested transfer amount.",
-          "type": "final_text_contains",
-          "value": "50"
+          "type": "final_text_regex",
+          "pattern": "(?i)(?:\\$50(?:\\.00)?\\b|\\b50\\s+dollars?\\b)"
         },
         {
           "text": "The answer describes a hypothetical change.",
@@ -228,8 +228,8 @@
         },
         {
           "text": "The answer names the requested target amount.",
-          "type": "final_text_contains",
-          "value": "200"
+          "type": "final_text_regex",
+          "pattern": "(?i)(?:\\$200(?:\\.00)?\\b|\\b200\\s+dollars?\\b)"
         },
         {
           "text": "The answer describes a hypothetical change.",

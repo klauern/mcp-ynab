@@ -338,6 +338,36 @@ def test_grade_run_validates_captured_mutation_payload() -> None:
     )
 
 
+def test_grade_run_rejects_empty_mutation_collection() -> None:
+    task = {
+        "id": 7,
+        "category": "mutation",
+        "intent_expectation": {
+            "tools": ["approve_transactions"],
+            "arguments": {"budget_id": None, "transaction_ids": None},
+        },
+        "expectations": [],
+    }
+
+    grading = grade_run(
+        task,
+        "direct_tools",
+        {"final_text": "I would approve them.", "tool_calls": []},
+        intended_writes=[
+            {
+                "tool": "approve_transactions",
+                "arguments": {"budget_id": "budget-1", "transaction_ids": []},
+            }
+        ],
+    )
+
+    assert grading["expectations"][-1]["passed"] is False
+    assert (
+        grading["expectations"][-1]["evidence"]
+        == "approve_transactions empty fields: transaction_ids"
+    )
+
+
 def test_grade_iteration_writes_grading_json_for_each_config(tmp_path: Path) -> None:
     task = {
         "id": 1,

@@ -18,7 +18,8 @@ async def execute(
     """Execute a Python snippet against the gated ``ynab.read``/``ynab.write`` Code Mode API.
 
     Enabled by default. Mutating calls require ``code_mode_mutations_enabled`` preference
-    and must use ``ynab.write.*``. The snippet is treated as the body of an async function:
+    and must use ``ynab.write.*``; eval dry-run mode is the explicit exception. The snippet
+    is treated as the body of an async function:
     ``await ynab.read.get_budgets()``, ``return`` directly.
     """
     prefs = _s.ynab_resources.preferences

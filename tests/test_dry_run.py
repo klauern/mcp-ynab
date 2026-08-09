@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from types import SimpleNamespace
 from typing import Any
 
@@ -36,11 +37,14 @@ async def test_interceptor_records_validated_arguments_without_calling_original(
     intents_path = tmp_path / "intended_writes.json"
     monkeypatch.setenv(INTENTS_PATH_ENV, str(intents_path))
 
-    async def real_write(**_kwargs: Any) -> None:
+    async def real_write(budget_id: str, transaction_id: str, category_id: str) -> None:
         raise AssertionError("a real YNAB write must never be dispatched")
 
     mcp = _dry_run_mcp(real_write)
     install_dry_run_interceptor(mcp)
+    assert inspect.signature(mcp._tool_manager._tools["categorize_transaction"].fn) == inspect.signature(
+        real_write
+    )
 
     result = await mcp._tool_manager._tools["categorize_transaction"].fn(
         budget_id="budget-1", transaction_id="transaction-1", category_id="category-1"

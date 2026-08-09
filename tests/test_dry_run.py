@@ -42,9 +42,9 @@ async def test_interceptor_records_validated_arguments_without_calling_original(
 
     mcp = _dry_run_mcp(real_write)
     install_dry_run_interceptor(mcp)
-    assert inspect.signature(mcp._tool_manager._tools["categorize_transaction"].fn) == inspect.signature(
-        real_write
-    )
+    assert inspect.signature(
+        mcp._tool_manager._tools["categorize_transaction"].fn
+    ) == inspect.signature(real_write)
 
     result = await mcp._tool_manager._tools["categorize_transaction"].fn(
         budget_id="budget-1", transaction_id="transaction-1", category_id="category-1"

@@ -82,6 +82,16 @@ tasks:
     cmds:
       - uv run mypy src/mcp_ynab
 
+  parity:manifest:
+    desc: "Regenerate the OpenAPI 1.86 parity manifest from the official YNAB spec"
+    cmds:
+      - uv run --script scripts/generate_api_parity_manifest.py
+
+  parity:manifest:check:
+    desc: "Verify the checked-in parity manifest matches the official YNAB spec"
+    cmds:
+      - uv run --script scripts/generate_api_parity_manifest.py --check
+
   docstrings:
     desc: "Check docstring coverage (fails under 80%)"
     cmds:

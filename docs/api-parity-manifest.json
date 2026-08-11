@@ -1,0 +1,409 @@
+{
+  "schema_version": 1,
+  "source": {
+    "name": "Official YNAB OpenAPI specification",
+    "url": "https://api.ynab.com/papi/open_api_spec.yaml",
+    "version": "1.86.0",
+    "sha256": "da7a78345b34b0fa6e50c39709cf860cb869c70d137d506c925d8b1886f3a98b"
+  },
+  "generated_by": "scripts/generate_api_parity_manifest.py",
+  "operation_count": 44,
+  "operations": [
+    {
+      "section": "Accounts",
+      "method": "POST",
+      "path": "/plans/{plan_id}/accounts",
+      "operation_id": "createAccount",
+      "canonical_tool": "api_create_account",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Categories",
+      "method": "POST",
+      "path": "/plans/{plan_id}/categories",
+      "operation_id": "createCategory",
+      "canonical_tool": "api_create_category",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Categories",
+      "method": "POST",
+      "path": "/plans/{plan_id}/category_groups",
+      "operation_id": "createCategoryGroup",
+      "canonical_tool": "api_create_category_group",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Payees",
+      "method": "POST",
+      "path": "/plans/{plan_id}/payees",
+      "operation_id": "createPayee",
+      "canonical_tool": "api_create_payee",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Scheduled Transactions",
+      "method": "POST",
+      "path": "/plans/{plan_id}/scheduled_transactions",
+      "operation_id": "createScheduledTransaction",
+      "canonical_tool": "api_create_scheduled_transaction",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Transactions",
+      "method": "POST",
+      "path": "/plans/{plan_id}/transactions",
+      "operation_id": "createTransaction",
+      "canonical_tool": "api_create_transaction",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Scheduled Transactions",
+      "method": "DELETE",
+      "path": "/plans/{plan_id}/scheduled_transactions/{scheduled_transaction_id}",
+      "operation_id": "deleteScheduledTransaction",
+      "canonical_tool": "api_delete_scheduled_transaction",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Transactions",
+      "method": "DELETE",
+      "path": "/plans/{plan_id}/transactions/{transaction_id}",
+      "operation_id": "deleteTransaction",
+      "canonical_tool": "api_delete_transaction",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Accounts",
+      "method": "GET",
+      "path": "/plans/{plan_id}/accounts/{account_id}",
+      "operation_id": "getAccountById",
+      "canonical_tool": "api_get_account_by_id",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Accounts",
+      "method": "GET",
+      "path": "/plans/{plan_id}/accounts",
+      "operation_id": "getAccounts",
+      "canonical_tool": "api_get_accounts",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Categories",
+      "method": "GET",
+      "path": "/plans/{plan_id}/categories",
+      "operation_id": "getCategories",
+      "canonical_tool": "api_get_categories",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Categories",
+      "method": "GET",
+      "path": "/plans/{plan_id}/categories/{category_id}",
+      "operation_id": "getCategoryById",
+      "canonical_tool": "api_get_category_by_id",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Money Movements",
+      "method": "GET",
+      "path": "/plans/{plan_id}/money_movement_groups",
+      "operation_id": "getMoneyMovementGroups",
+      "canonical_tool": "api_get_money_movement_groups",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Money Movements",
+      "method": "GET",
+      "path": "/plans/{plan_id}/months/{month}/money_movement_groups",
+      "operation_id": "getMoneyMovementGroupsByMonth",
+      "canonical_tool": "api_get_money_movement_groups_by_month",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Money Movements",
+      "method": "GET",
+      "path": "/plans/{plan_id}/money_movements",
+      "operation_id": "getMoneyMovements",
+      "canonical_tool": "api_get_money_movements",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Money Movements",
+      "method": "GET",
+      "path": "/plans/{plan_id}/months/{month}/money_movements",
+      "operation_id": "getMoneyMovementsByMonth",
+      "canonical_tool": "api_get_money_movements_by_month",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Categories",
+      "method": "GET",
+      "path": "/plans/{plan_id}/months/{month}/categories/{category_id}",
+      "operation_id": "getMonthCategoryById",
+      "canonical_tool": "api_get_month_category_by_id",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Payees",
+      "method": "GET",
+      "path": "/plans/{plan_id}/payees/{payee_id}",
+      "operation_id": "getPayeeById",
+      "canonical_tool": "api_get_payee_by_id",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Payee Locations",
+      "method": "GET",
+      "path": "/plans/{plan_id}/payee_locations/{payee_location_id}",
+      "operation_id": "getPayeeLocationById",
+      "canonical_tool": "api_get_payee_location_by_id",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Payee Locations",
+      "method": "GET",
+      "path": "/plans/{plan_id}/payee_locations",
+      "operation_id": "getPayeeLocations",
+      "canonical_tool": "api_get_payee_locations",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Payee Locations",
+      "method": "GET",
+      "path": "/plans/{plan_id}/payees/{payee_id}/payee_locations",
+      "operation_id": "getPayeeLocationsByPayee",
+      "canonical_tool": "api_get_payee_locations_by_payee",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Payees",
+      "method": "GET",
+      "path": "/plans/{plan_id}/payees",
+      "operation_id": "getPayees",
+      "canonical_tool": "api_get_payees",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Plans",
+      "method": "GET",
+      "path": "/plans/{plan_id}",
+      "operation_id": "getPlanById",
+      "canonical_tool": "api_get_plan_by_id",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Months",
+      "method": "GET",
+      "path": "/plans/{plan_id}/months/{month}",
+      "operation_id": "getPlanMonth",
+      "canonical_tool": "api_get_plan_month",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Months",
+      "method": "GET",
+      "path": "/plans/{plan_id}/months",
+      "operation_id": "getPlanMonths",
+      "canonical_tool": "api_get_plan_months",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Plans",
+      "method": "GET",
+      "path": "/plans/{plan_id}/settings",
+      "operation_id": "getPlanSettingsById",
+      "canonical_tool": "api_get_plan_settings_by_id",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Plans",
+      "method": "GET",
+      "path": "/plans",
+      "operation_id": "getPlans",
+      "canonical_tool": "api_get_plans",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Scheduled Transactions",
+      "method": "GET",
+      "path": "/plans/{plan_id}/scheduled_transactions/{scheduled_transaction_id}",
+      "operation_id": "getScheduledTransactionById",
+      "canonical_tool": "api_get_scheduled_transaction_by_id",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Scheduled Transactions",
+      "method": "GET",
+      "path": "/plans/{plan_id}/scheduled_transactions",
+      "operation_id": "getScheduledTransactions",
+      "canonical_tool": "api_get_scheduled_transactions",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Transactions",
+      "method": "GET",
+      "path": "/plans/{plan_id}/transactions/{transaction_id}",
+      "operation_id": "getTransactionById",
+      "canonical_tool": "api_get_transaction_by_id",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Transactions",
+      "method": "GET",
+      "path": "/plans/{plan_id}/transactions",
+      "operation_id": "getTransactions",
+      "canonical_tool": "api_get_transactions",
+      "classification": "read",
+      "implementation_status": "implemented"
+    },
+    {
+      "section": "Transactions",
+      "method": "GET",
+      "path": "/plans/{plan_id}/accounts/{account_id}/transactions",
+      "operation_id": "getTransactionsByAccount",
+      "canonical_tool": "api_get_transactions_by_account",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Transactions",
+      "method": "GET",
+      "path": "/plans/{plan_id}/categories/{category_id}/transactions",
+      "operation_id": "getTransactionsByCategory",
+      "canonical_tool": "api_get_transactions_by_category",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Transactions",
+      "method": "GET",
+      "path": "/plans/{plan_id}/months/{month}/transactions",
+      "operation_id": "getTransactionsByMonth",
+      "canonical_tool": "api_get_transactions_by_month",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Transactions",
+      "method": "GET",
+      "path": "/plans/{plan_id}/payees/{payee_id}/transactions",
+      "operation_id": "getTransactionsByPayee",
+      "canonical_tool": "api_get_transactions_by_payee",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "User",
+      "method": "GET",
+      "path": "/user",
+      "operation_id": "getUser",
+      "canonical_tool": "api_get_user",
+      "classification": "read",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Transactions",
+      "method": "POST",
+      "path": "/plans/{plan_id}/transactions/import",
+      "operation_id": "importTransactions",
+      "canonical_tool": "api_import_transactions",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Categories",
+      "method": "PATCH",
+      "path": "/plans/{plan_id}/categories/{category_id}",
+      "operation_id": "updateCategory",
+      "canonical_tool": "api_update_category",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Categories",
+      "method": "PATCH",
+      "path": "/plans/{plan_id}/category_groups/{category_group_id}",
+      "operation_id": "updateCategoryGroup",
+      "canonical_tool": "api_update_category_group",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Categories",
+      "method": "PATCH",
+      "path": "/plans/{plan_id}/months/{month}/categories/{category_id}",
+      "operation_id": "updateMonthCategory",
+      "canonical_tool": "api_update_month_category",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Payees",
+      "method": "PATCH",
+      "path": "/plans/{plan_id}/payees/{payee_id}",
+      "operation_id": "updatePayee",
+      "canonical_tool": "api_update_payee",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Scheduled Transactions",
+      "method": "PUT",
+      "path": "/plans/{plan_id}/scheduled_transactions/{scheduled_transaction_id}",
+      "operation_id": "updateScheduledTransaction",
+      "canonical_tool": "api_update_scheduled_transaction",
+      "classification": "write",
+      "implementation_status": "planned"
+    },
+    {
+      "section": "Transactions",
+      "method": "PUT",
+      "path": "/plans/{plan_id}/transactions/{transaction_id}",
+      "operation_id": "updateTransaction",
+      "canonical_tool": "api_update_transaction",
+      "classification": "write",
+      "implementation_status": "implemented"
+    },
+    {
+      "section": "Transactions",
+      "method": "PATCH",
+      "path": "/plans/{plan_id}/transactions",
+      "operation_id": "updateTransactions",
+      "canonical_tool": "api_update_transactions",
+      "classification": "write",
+      "implementation_status": "planned"
+    }
+  ]
+}

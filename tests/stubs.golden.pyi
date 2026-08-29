@@ -3,6 +3,17 @@ from datetime import date
 from typing import Any, Literal
 
 class ReadNamespace:
+    async def api_get_transactions(
+        self,
+        plan_id: str,
+        since_date: date | None = ...,
+        until_date: date | None = ...,
+        type: str | None = ...,
+        last_knowledge_of_server: int | None = ...,
+    ) -> dict[str, Any]:
+        """Return transactions and round-trip the YNAB transaction knowledge token."""
+        ...
+
     async def find_account_transaction_subset_matches(
         self,
         budget_id: str,
@@ -131,6 +142,14 @@ class ReadNamespace:
         ...
 
 class WriteNamespace:
+    async def api_update_transaction(self, plan_id: str, transaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Update one transaction using a flat SaveTransaction-compatible body.
+
+        Args:
+            body: Flat SaveTransactionWithIdOrImportId-compatible request body.
+        """
+        ...
+
     async def approve_transactions(self, budget_id: str, transaction_ids: list[str]) -> str:
         """Approve many transactions in one round-trip via the bulk PATCH endpoint.
 

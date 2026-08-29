@@ -17,11 +17,11 @@ from ynab.models.transactions_response import TransactionsResponse
 from ynab.models.transactions_response_data import TransactionsResponseData
 from ynab.rest import ApiException
 
-from mcp_ynab import server
+from mcp_ynab import adapters, server
 from mcp_ynab.adapters import api_get_transactions, api_update_transaction
-from mcp_ynab import adapters
+from mcp_ynab.code_mode import build_spec, generate_stubs
 from mcp_ynab.errors import YNABAPIError
-from mcp_ynab.state import YNABResources
+from mcp_ynab.state import Preferences, YNABResources
 
 
 def _uuid(label: str) -> str:
@@ -64,14 +64,6 @@ def _resource(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> YNABResources:
     resources = YNABResources(tmp_path)
     monkeypatch.setattr(server, "ynab_resources", resources)
     return resources
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _isolate_adapter_registration() -> None:
-    """Keep legacy code-mode golden snapshots isolated from this additive module."""
-    yield
-    for name in {"api_get_transactions", "api_update_transaction"}:
-        server.mcp._tool_manager._tools.pop(name, None)
 
 
 @pytest.mark.asyncio
@@ -388,6 +380,61 @@ def test_adapter_tools_are_registered_with_canonical_names() -> None:
     assert tools["api_update_transaction"].annotations.readOnlyHint is False
     assert "ctx" not in tools["api_get_transactions"].parameters["properties"]
     assert "ctx" not in tools["api_update_transaction"].parameters["properties"]
+
+
+@pytest.mark.asyncio
+async def test_implemented_canonical_adapters_share_one_registered_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the manifest, Code Mode, and direct-tool escape hatch aligned."""
+    manifest_path = Path(__file__).parents[1] / "docs" / "api-parity-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected = {
+        operation["canonical_tool"]: operation["classification"]
+        for operation in manifest["operations"]
+        if operation["implementation_status"] == "implemented"
+    }
+
+    registered = {name for name in server.mcp._tool_manager._tools if name.startswith("api_")}
+    assert registered == set(expected)
+
+    catalog = {
+        entry["name"]: entry["namespace"]
+        for entry in build_spec(server.mcp, mutations_enabled=True)
+        if entry["name"].startswith("api_")
+    }
+    assert catalog == expected
+
+    read_only_catalog = {
+        entry["name"]
+        for entry in build_spec(server.mcp, mutations_enabled=False)
+        if entry["name"].startswith("api_")
+    }
+    assert read_only_catalog == {name for name, kind in expected.items() if kind == "read"}
+
+    stubs = generate_stubs(server.mcp, mutations_enabled=True)
+    read_stubs, write_stubs = stubs.split("class WriteNamespace:", maxsplit=1)
+    for name, namespace in expected.items():
+        expected_stubs = read_stubs if namespace == "read" else write_stubs
+        other_stubs = write_stubs if namespace == "read" else read_stubs
+        assert f"async def {name}(" in expected_stubs
+        assert f"async def {name}(" not in other_stubs
+
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=False)),
+    )
+    direct_names = {tool.name for tool in await server.mcp.list_tools()}
+    assert direct_names & registered == registered
+
+    monkeypatch.setattr(
+        server,
+        "ynab_resources",
+        SimpleNamespace(preferences=Preferences(code_mode_replace_tools=True)),
+    )
+    compressed_names = {tool.name for tool in await server.mcp.list_tools()}
+    assert compressed_names.isdisjoint(registered)
 
 
 def test_body_parameter_name_resolves_real_sdk_write_methods() -> None:

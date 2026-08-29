@@ -511,8 +511,7 @@ async def test_categorize_transaction_id_path_skips_fetch_and_patches_only_categ
     mock_ynab_apis.transactions.get_transaction_by_id.assert_not_called()
     mock_ynab_apis.transactions.get_transactions.assert_not_called()
     call = mock_ynab_apis.transactions.update_transaction.call_args
-    assert call.kwargs["budget_id"] == "budget-1"
-    assert call.kwargs["transaction_id"] == "tx-1"
+    assert call.args[:2] == ("budget-1", "tx-1")
     assert captured_kwargs == {"category_id": "cat-1"}
 
 

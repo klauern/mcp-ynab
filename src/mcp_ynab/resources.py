@@ -106,12 +106,9 @@ async def list_budgets_resource() -> list[types.TextContent]:
         rows: list[list[str]] = []
         for budget in active:
             last_modified = getattr(budget, "last_modified_on", None)
+            isoformat = getattr(last_modified, "isoformat", None)
             last_modified_str = (
-                last_modified.isoformat()
-                if hasattr(last_modified, "isoformat")
-                else str(last_modified)
-                if last_modified
-                else ""
+                str(isoformat()) if callable(isoformat) else str(last_modified or "")
             )
             rows.append(
                 [

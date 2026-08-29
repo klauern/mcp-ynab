@@ -1754,8 +1754,7 @@ async def test_split_transaction_patches_with_subtransactions_when_sum_matches(
 
     mock_ynab_apis.transactions.update_transaction.assert_called_once()
     call = mock_ynab_apis.transactions.update_transaction.call_args
-    assert call.kwargs["budget_id"] == "b-1"
-    assert call.kwargs["transaction_id"] == "t-1"
+    assert call.args[:2] == ("b-1", "t-1")
 
 
 @pytest.mark.asyncio
@@ -2350,7 +2349,7 @@ async def test_get_transactions_by_category_passes_since_date(
     await server.get_transactions_by_category("b-1", "cat-1", since_date="2026-01-01")
 
     call = mock_ynab_apis.transactions.get_transactions_by_category.call_args
-    assert call.kwargs["since_date"] == "2026-01-01"
+    assert call.kwargs["since_date"] == date(2026, 1, 1)
 
 
 @pytest.mark.asyncio

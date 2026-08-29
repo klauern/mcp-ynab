@@ -217,9 +217,6 @@ async def _serve(
             return frame
 
 
-_RESULT_FIELDS = ("ok", "result", "logs", "error", "traceback", "truncated")
-
-
 async def _run_in_subprocess(
     startup: dict[str, Any],
     *,
@@ -258,7 +255,7 @@ async def _run_in_subprocess(
             proc.kill()
             await proc.wait()
 
-    return CodeModeResult(**{key: frame.get(key) for key in _RESULT_FIELDS})
+    return CodeModeResult.model_validate(frame)
 
 
 async def run_code(

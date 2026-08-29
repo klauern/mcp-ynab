@@ -10,6 +10,7 @@ through late attribute lookup. Pure formatting helpers are imported from
 from datetime import date, timedelta
 import logging
 from typing import Any, Dict, List, Literal, Optional, cast
+from uuid import UUID
 
 from mcp.server.fastmcp import Context
 from ynab.api_client import ApiClient
@@ -71,7 +72,7 @@ async def get_account_balance(account_id: str, ctx: Optional[Context] = None) ->
     async with await _s.get_ynab_client() as client:
         accounts_api = _s.AccountsApi(client)
         budget_id = await _s._resolve_budget_id(client, ctx)
-        response = accounts_api.get_account_by_id(budget_id, account_id)
+        response = accounts_api.get_account_by_id(budget_id, cast(UUID, account_id))
         return float(response.data.account.balance) / 1000
 
 
@@ -439,7 +440,7 @@ async def update_category(
         category=ExistingCategory(
             name=name,
             note=note,
-            category_group_id=category_group_id,
+            category_group_id=cast(Optional[UUID], category_group_id),
             goal_target=goal_target_milliunits,
             goal_target_date=parsed_goal_date,
             goal_needs_whole_amount=goal_needs_whole_amount,
@@ -549,7 +550,9 @@ async def merge_payees(
         if txn_ids:
             patch_payload = PatchTransactionsWrapper(
                 transactions=[
-                    SaveTransactionWithIdOrImportId(id=tid, payee_id=destination_payee_id)
+                    SaveTransactionWithIdOrImportId(
+                        id=tid, payee_id=cast(UUID, destination_payee_id)
+                    )
                     for tid in txn_ids
                 ]
             )

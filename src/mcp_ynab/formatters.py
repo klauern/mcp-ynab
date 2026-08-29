@@ -241,7 +241,8 @@ def _format_dollar_amount(amount: float) -> str:
 def _render_month_markdown(month_detail: Any) -> str:
     """Render a YNAB MonthDetail as markdown: header, totals, per-group table."""
     month_value = getattr(month_detail, "month", None)
-    month_label = month_value.isoformat() if hasattr(month_value, "isoformat") else str(month_value)
+    isoformat = getattr(month_value, "isoformat", None)
+    month_label = str(isoformat()) if callable(isoformat) else str(month_value)
 
     rta = float(getattr(month_detail, "to_be_budgeted", 0) or 0) / 1000
     income = float(getattr(month_detail, "income", 0) or 0) / 1000

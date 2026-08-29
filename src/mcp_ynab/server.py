@@ -69,10 +69,14 @@ from .dry_run import install_dry_run_interceptor
 load_dotenv(verbose=True)
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("YNAB")
-READ_ONLY_TOOL = types.ToolAnnotations(readOnlyHint=True, idempotentHint=True)
-MUTATING_TOOL = types.ToolAnnotations(readOnlyHint=False, destructiveHint=True)
-IDEMPOTENT_MUTATING_TOOL = types.ToolAnnotations(
+mcp: FastMCP = FastMCP("YNAB")
+READ_ONLY_TOOL: types.ToolAnnotations = types.ToolAnnotations(
+    readOnlyHint=True, idempotentHint=True
+)
+MUTATING_TOOL: types.ToolAnnotations = types.ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True
+)
+IDEMPOTENT_MUTATING_TOOL: types.ToolAnnotations = types.ToolAnnotations(
     readOnlyHint=False, idempotentHint=True, destructiveHint=False
 )
 
@@ -282,8 +286,8 @@ async def _call_tool_with_code_mode_filter(name: str, arguments: dict):
     return await _call_tool_without_code_mode_filter(name, arguments)
 
 
-mcp.list_tools = _list_tools_with_code_mode_filter
-mcp.call_tool = _call_tool_with_code_mode_filter
+setattr(mcp, "list_tools", _list_tools_with_code_mode_filter)
+setattr(mcp, "call_tool", _call_tool_with_code_mode_filter)
 
 # Code Mode compresses the public MCP surface, but the underlying FastMCP
 # registry intentionally remains populated. The `ynab.read.*`/`ynab.write.*`
@@ -304,6 +308,8 @@ async def _filtered_list_tools_rh(req: types.ListToolsRequest) -> types.ServerRe
     result = await _original_list_tools_rh(req)
     if not _code_mode_replacement_enabled():
         return result
+    if not isinstance(result.root, types.ListToolsResult):
+        raise TypeError("List-tools handler returned an unexpected MCP result type.")
     filtered = [t for t in result.root.tools if t.name in _CODE_MODE_REPLACEMENT_VISIBLE_TOOLS]
     return types.ServerResult(types.ListToolsResult(tools=filtered))
 

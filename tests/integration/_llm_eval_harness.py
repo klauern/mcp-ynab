@@ -55,20 +55,22 @@ CODE_MODE_SYSTEM = (
     "with a `ynab` object in scope. Call read operations as "
     "`await ynab.read.<operation>(...)` and `return` the value you want back.\n\n"
     "Resolve ids (budget, category, account) by reading them rather than guessing. "
-    "The environment is read-only: `ynab.write.*` is unavailable, so for any change "
-    "request, gather the relevant data and describe what you would do — do not attempt "
-    "to apply it. When done, give the user a clear final answer in plain language."
+    "Write calls run in a dry-run recorder: they persist the intended payload but never "
+    "change YNAB. For a requested change, resolve IDs, call the appropriate "
+    "`ynab.write.*` operation once, then explain the captured intent. When done, give "
+    "the user a clear final answer in plain language."
 )
 
 # Orient the model for direct-tools mode: all YNAB tools are visible as flat MCP
-# tools. Same read-only + describe-only posture as Code Mode — mutations are
-# blocked at the structural-check layer so no real writes can sneak through.
+# tools. Write calls are intercepted server-side and recorded as dry-run
+# payloads, so the model can exercise the normal direct mutation schema.
 DIRECT_TOOLS_SYSTEM = (
     "You operate a YNAB budget through direct MCP tools. Use the available read tools "
     "to answer questions about the budget. Resolve ids (budget, category, account) by "
-    "reading them rather than guessing. The environment is read-only: for any change "
-    "request, gather the relevant data and describe what you would do — do not attempt "
-    "to apply it. When done, give the user a clear final answer in plain language."
+    "reading them rather than guessing. Write calls run in a dry-run recorder: they "
+    "persist the intended payload but never change YNAB. For a requested change, call "
+    "the appropriate write tool once, then explain the captured intent. When done, "
+    "give the user a clear final answer in plain language."
 )
 
 # YNAB-mutating tools. Dry-run/read evals must never call these — the structural
@@ -92,6 +94,7 @@ YNAB_WRITE_TOOLS = frozenset(
         "rename_payee",
         "set_api_key",
         "clear_api_key",
+        "split_transaction",
     }
 )
 
@@ -234,7 +237,9 @@ async def drive_prompt(
     """
     driver = current_driver()
     if driver == "agent-sdk":
-        return await _drive_via_agent_sdk(prompt, model=model)
+        return await _drive_via_agent_sdk(
+            prompt, model=model, server_env_overrides=server_env_overrides
+        )
     if driver == "messages-api":
         return await _drive_via_messages_api(
             prompt,
@@ -357,12 +362,16 @@ def _subscription_env() -> dict[str, str]:
     return env
 
 
-def agent_sdk_options(model: str) -> Any:
+def agent_sdk_options(model: str, *, server_env_overrides: dict[str, str] | None = None) -> Any:
     """Build ClaudeAgentOptions for the subscription-auth Agent SDK driver."""
     from claude_agent_sdk import ClaudeAgentOptions
 
     command = os.getenv("EVAL_MCP_COMMAND", sys.executable)
     args = json.loads(os.getenv("EVAL_MCP_ARGS", '["-m", "mcp_ynab"]'))
+
+    server_env = dict(os.environ)
+    if server_env_overrides:
+        server_env.update(server_env_overrides)
 
     return ClaudeAgentOptions(
         model=model,
@@ -371,7 +380,7 @@ def agent_sdk_options(model: str) -> Any:
                 "type": "stdio",
                 "command": command,
                 "args": args,
-                "env": dict(os.environ),
+                "env": server_env,
             }
         },
         # Only the Code Mode tools may run; dontAsk denies anything unlisted
@@ -388,7 +397,12 @@ def agent_sdk_options(model: str) -> Any:
     )
 
 
-async def _drive_via_agent_sdk(prompt: str, *, model: str) -> EvalRun:
+async def _drive_via_agent_sdk(
+    prompt: str,
+    *,
+    model: str,
+    server_env_overrides: dict[str, str] | None = None,
+) -> EvalRun:
     """Drive ``prompt`` with the Claude Agent SDK (subscription auth)."""
     from claude_agent_sdk import (
         AssistantMessage,
@@ -398,7 +412,9 @@ async def _drive_via_agent_sdk(prompt: str, *, model: str) -> EvalRun:
     )
 
     run = EvalRun()
-    async with ClaudeSDKClient(options=agent_sdk_options(model)) as client:
+    async with ClaudeSDKClient(
+        options=agent_sdk_options(model, server_env_overrides=server_env_overrides)
+    ) as client:
         await client.query(prompt)
         async for message in client.receive_response():
             if not isinstance(message, AssistantMessage):

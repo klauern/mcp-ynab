@@ -286,7 +286,9 @@ def test_subscription_env_forces_subscription_auth(monkeypatch: pytest.MonkeyPat
 
 
 def test_agent_sdk_options_shape() -> None:
-    opts = harness.agent_sdk_options("claude-sonnet-4-6")
+    opts = harness.agent_sdk_options(
+        "claude-sonnet-4-6", server_env_overrides={"MCP_YNAB_CODE_MODE_ENABLED": "false"}
+    )
     assert opts.model == "claude-sonnet-4-6"
     assert "ynab" in opts.mcp_servers
     assert opts.mcp_servers["ynab"]["type"] == "stdio"
@@ -296,3 +298,4 @@ def test_agent_sdk_options_shape() -> None:
     # Isolated from the user's global Claude Code config for reproducibility.
     assert opts.setting_sources == []
     assert opts.strict_mcp_config is True
+    assert opts.mcp_servers["ynab"]["env"]["MCP_YNAB_CODE_MODE_ENABLED"] == "false"

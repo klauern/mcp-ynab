@@ -10,9 +10,13 @@ Workspace layout::
             code_mode/outputs/
                 run.json           # tool_calls, final_text, tokens, duration_ms
                 executed_code.py   # code snippets from execute calls (code_mode only)
+                intended_writes.json # intercepted mutation payloads
+                grading.json       # deterministic assertions for this run
             direct_tools/outputs/
                 run.json
         timing.json                # per-eval + total token/time summary
+        benchmark.json             # viewer-compatible aggregate metrics
+        benchmark.md               # token-delta-first summary report
 
 Usage::
 
@@ -25,11 +29,9 @@ Requires:
     YNAB_API_KEY  — live YNAB account key
     EVAL_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY  — Anthropic API key (messages-api driver)
 
-Note on write interception:
-    Structured PATCH-payload capture (intended_writes.json) requires a server-side
-    dry-run mode that is not yet implemented. The executed_code.py files capture the
-    Python snippets that would have been run in code_mode, which is the closest
-    proxy available without server changes. Tracked in mcp-ynab-g57.3.
+The runner writes ``grading.json`` for every task/configuration after all runs
+finish. It records deterministic completion, write-safety, expected-read-path,
+and task-specific answer assertions from ``evals.json``.
 """
 
 from __future__ import annotations
@@ -53,8 +55,9 @@ from tests.integration._llm_eval_harness import (  # noqa: E402
     DIRECT_TOOLS_SYSTEM,
     EvalRun,
     drive_prompt,
-    YNAB_WRITE_TOOLS,
 )
+from evals.aggregate_benchmark import write_benchmark  # noqa: E402
+from evals.grading import grade_iteration  # noqa: E402
 
 EVALS_PATH = Path(__file__).resolve().parent / "evals.json"
 DEFAULT_WORKSPACE = Path(__file__).resolve().parent / "workspace"
@@ -66,7 +69,7 @@ CODE_MODE_ENV: dict[str, str] = {
     "MCP_YNAB_CODE_MODE_MUTATIONS_ENABLED": "false",
 }
 
-# Config B — Direct tools: read-only YNAB tool set visible, code mode off.
+# Config B — Direct tools, with writes replaced by dry-run recorders.
 DIRECT_TOOLS_ENV: dict[str, str] = {
     "MCP_YNAB_CODE_MODE_ENABLED": "false",
     "MCP_YNAB_CODE_MODE_REPLACE_TOOLS": "false",
@@ -83,7 +86,7 @@ CONFIGS: list[dict[str, Any]] = [
         "name": "direct_tools",
         "env": DIRECT_TOOLS_ENV,
         "system_prompt": DIRECT_TOOLS_SYSTEM,
-        "blocked_tool_names": YNAB_WRITE_TOOLS,
+        "blocked_tool_names": frozenset(),
     },
 ]
 
@@ -191,16 +194,19 @@ async def run_eval_dual(
     *,
     model: str,
     max_iterations: int,
+    intent_paths: dict[str, Path],
 ) -> dict[str, EvalRun]:
     """Run a single eval task under both configs concurrently."""
 
     async def _run_config(cfg: dict[str, Any]) -> EvalRun:
+        env = dict(cfg["env"])
+        env["MCP_YNAB_EVAL_DRY_RUN_INTENTS_PATH"] = str(intent_paths[cfg["name"]])
         return await drive_prompt(
             task["prompt"],
             model=model,
             max_iterations=max_iterations,
             system_prompt=cfg["system_prompt"],
-            server_env_overrides=cfg["env"],
+            server_env_overrides=env,
             blocked_tool_names=cfg["blocked_tool_names"],
         )
 
@@ -223,7 +229,24 @@ async def run_all(
     for task in tasks:
         task_id = str(task["id"])
         print(f"  [{task_id}] {task['name']} ...", end=" ", flush=True)
-        config_runs = await run_eval_dual(task, model=model, max_iterations=max_iterations)
+        output_dirs = {
+            cfg["name"]: eval_output_dir(iteration_dir, task_id, cfg["name"])
+            for cfg in CONFIGS
+        }
+        for output_dir in output_dirs.values():
+            output_dir.mkdir(parents=True, exist_ok=True)
+            # Every surface gets a durable empty artifact even if the model
+            # makes no write call. The server appends to this exact file.
+            (output_dir / "intended_writes.json").write_text("[]\n")
+        config_runs = await run_eval_dual(
+            task,
+            model=model,
+            max_iterations=max_iterations,
+            intent_paths={
+                config_name: output_dir / "intended_writes.json"
+                for config_name, output_dir in output_dirs.items()
+            },
+        )
         results[task_id] = config_runs
 
         for config_name, run in config_runs.items():
@@ -238,10 +261,13 @@ async def run_all(
 
     timing = build_timing_summary(results)
     (iteration_dir / "timing.json").write_text(json.dumps(timing, indent=2))
+    graded = grade_iteration(iteration_dir, tasks)
+    write_benchmark(iteration_dir, tasks, model=model)
     print(
         f"\nTotal: {timing['total_tokens']} tokens, "
         f"{timing['total_duration_seconds']:.1f}s  →  {iteration_dir / 'timing.json'}"
     )
+    print(f"Wrote {graded} grading reports")
 
 
 def _require_keys() -> None:

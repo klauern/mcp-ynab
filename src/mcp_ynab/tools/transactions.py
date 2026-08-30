@@ -11,7 +11,8 @@ monkeypatches propagate.
 import difflib
 import itertools
 from datetime import date, datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, cast
+from uuid import UUID
 
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
@@ -24,12 +25,15 @@ from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
 from ynab.models.save_scheduled_transaction import SaveScheduledTransaction
 from ynab.models.save_sub_transaction import SaveSubTransaction
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
+from ynab.models.scheduled_transaction_frequency import ScheduledTransactionFrequency
 from ynab.models.transaction_detail import TransactionDetail
+from ynab.models.transaction_flag_color import TransactionFlagColor
 from ynab.rest import ApiException
 
 from .. import server as _s
-from ..date_bounds import ALL_HISTORY_SINCE_DATE
+from ..date_bounds import ALL_HISTORY_SINCE_DATE, utc_now, utc_today
 from ..formatters import _build_markdown_table
+from ..money import decimal_to_milliunits
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +50,7 @@ def _explicit_since_date(days_back: Optional[int]) -> date:
     """
     if days_back is None:
         return ALL_HISTORY_SINCE_DATE
-    return (datetime.now() - timedelta(days=days_back)).date()
+    return (utc_now() - timedelta(days=days_back)).date()
 
 
 def _refresh_category_cache(client: ApiClient, budget_id: str) -> List[Dict[str, Any]]:
@@ -87,9 +91,10 @@ def _match_category(records: List[Dict[str, Any]], query: str) -> List[Dict[str,
     seen_ids: set[str] = set()
     for name_lower in close:
         for r, rn in zip(records, names_lower):
-            if rn == name_lower and r.get("id") not in seen_ids:
+            record_id = r.get("id")
+            if rn == name_lower and isinstance(record_id, str) and record_id not in seen_ids:
                 matched.append(r)
-                seen_ids.add(r.get("id"))
+                seen_ids.add(record_id)
                 break
     return matched
 
@@ -328,12 +333,12 @@ async def create_transaction(
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
 
-        amount_milliunits = int(amount * 1000)
+        amount_milliunits = decimal_to_milliunits(amount)
 
         budget_id = await _s._resolve_budget_id(client, ctx)
 
         category_id = await _resolve_category_id(client, budget_id, category_name, ctx)
-        txn_date = date.today()
+        txn_date = utc_today()
 
         should_confirm = confirm and _s.ynab_resources.preferences.confirm_before_post
         if should_confirm and ctx is not None:
@@ -351,13 +356,13 @@ async def create_transaction(
 
         # Create transaction data
         transaction = NewTransaction(
-            account_id=account_id,
+            account_id=cast(UUID, account_id),
             date=txn_date,
             amount=amount_milliunits,
             payee_name=payee_name,
-            payee_id=payee_id,
+            payee_id=cast(Optional[UUID], payee_id),
             memo=memo,
-            category_id=category_id,
+            category_id=cast(Optional[UUID], category_id),
         )
 
         wrapper = PostTransactionsWrapper(transaction=transaction)
@@ -386,7 +391,7 @@ async def get_transactions(
         transactions_api = _s.TransactionsApi(client)
         all_transactions: List[TransactionDetail] = []
         if since_date is None:
-            since_date = datetime.now().replace(day=1).date()
+            since_date = utc_today().replace(day=1)
         response = transactions_api.get_transactions_by_account(
             budget_id, account_id, since_date=since_date
         )
@@ -418,9 +423,7 @@ async def get_transactions(
         return markdown
 
 
-def _get_transaction_row(
-    txn: TransactionDetail, account_map: Dict[str, str], filter_type: str
-) -> List[str]:
+def _get_transaction_row(txn: Any, account_map: Dict[str, str], filter_type: str) -> List[str]:
     """Format a transaction into a row for the markdown table."""
     amount_dollars = float(txn.amount) / 1000
     amount_str = f"${abs(amount_dollars):,.2f}"
@@ -436,7 +439,7 @@ def _get_transaction_row(
     return [
         txn.id,
         txn.var_date.strftime("%Y-%m-%d"),
-        account_map.get(txn.account_id, "Unknown"),
+        account_map.get(str(txn.account_id), "Unknown"),
         amount_str,
         getattr(txn, "cleared", None) or "N/A",
         txn.payee_name or "N/A",
@@ -479,7 +482,7 @@ async def get_transactions_needing_attention(
 
         accounts_response = accounts_api.get_accounts(budget_id)
         account_map = {
-            account.id: account.name
+            str(account.id): account.name
             for account in accounts_response.data.accounts
             if not account.closed and not account.deleted
         }
@@ -530,8 +533,9 @@ def _find_transaction_by_id(
 
 def _txn_date_iso(txn: Any) -> str:
     txn_date = getattr(txn, "var_date", None) or getattr(txn, "date", None)
-    if hasattr(txn_date, "strftime"):
-        return txn_date.strftime("%Y-%m-%d")
+    strftime = getattr(txn_date, "strftime", None)
+    if callable(strftime):
+        return str(strftime("%Y-%m-%d"))
     return str(txn_date or "")
 
 
@@ -579,7 +583,7 @@ async def get_account_reconciliation_profile(
         accounts_api = _s.AccountsApi(client)
         transactions_api = _s.TransactionsApi(client)
 
-        account = accounts_api.get_account_by_id(budget_id, account_id).data.account
+        account = accounts_api.get_account_by_id(budget_id, cast(UUID, account_id)).data.account
         response = transactions_api.get_transactions_by_account(
             budget_id, account_id, since_date=since_date or ALL_HISTORY_SINCE_DATE
         )
@@ -661,8 +665,8 @@ async def find_account_transaction_subset_matches(
 
     rows = [_txn_to_reconciliation_row(txn) for txn in response.data.transactions]
     rows = rows[: max(0, candidate_limit)]
-    target_milliunits = int(round(target_amount * 1000))
-    tolerance_milliunits = int(round(abs(tolerance) * 1000))
+    target_milliunits = decimal_to_milliunits(target_amount)
+    tolerance_milliunits = decimal_to_milliunits(abs(tolerance))
     max_subset_size = max(1, min(max_subset_size, 5))
 
     matches: List[Dict[str, Any]] = []
@@ -752,14 +756,10 @@ async def categorize_transaction(
         # serialized into the request body. This avoids clobbering concurrent
         # edits to memo/cleared/flag_color/subtransactions in YNAB.
         wrapper = _s.PutTransactionWrapper(
-            transaction=_s.ExistingTransaction(category_id=category_id)
+            transaction=_s.ExistingTransaction(category_id=cast(UUID, category_id))
         )
         try:
-            transactions_api.update_transaction(
-                budget_id=budget_id,
-                transaction_id=resolved_id,
-                data=wrapper,
-            )
+            transactions_api.update_transaction(budget_id, resolved_id, wrapper)
         except ApiException as exc:
             if exc.status == 404:
                 return f"Transaction {transaction_id} (type: {id_type}) not found."
@@ -827,7 +827,7 @@ async def bulk_categorize(
                 transactions=[
                     SaveTransactionWithIdOrImportId(
                         id=entry["transaction_id"],
-                        category_id=entry["category_id"],
+                        category_id=cast(UUID, entry["category_id"]),
                     )
                     for entry in valid_entries
                 ]
@@ -1023,11 +1023,7 @@ async def update_transaction(
     async with await _s.get_ynab_client() as client:
         transactions_api = _s.TransactionsApi(client)
         wrapper = _s.PutTransactionWrapper(transaction=_s.ExistingTransaction(**supplied))
-        transactions_api.update_transaction(
-            budget_id=budget_id,
-            transaction_id=transaction_id,
-            data=wrapper,
-        )
+        transactions_api.update_transaction(budget_id, transaction_id, wrapper)
 
     field_labels = {
         "memo": "Memo",
@@ -1206,15 +1202,15 @@ async def create_scheduled_transaction(
     _validate_scheduled_transaction_date(txn_date)
     amount_milliunits = int(round(amount * 1000))
     txn = SaveScheduledTransaction(
-        account_id=account_id,
-        var_date=txn_date,
+        account_id=cast(UUID, account_id),
+        date=txn_date,
         amount=amount_milliunits,
-        payee_id=payee_id,
+        payee_id=cast(Optional[UUID], payee_id),
         payee_name=payee_name,
-        category_id=category_id,
+        category_id=cast(Optional[UUID], category_id),
         memo=memo,
-        flag_color=flag_color,
-        frequency=frequency,
+        flag_color=TransactionFlagColor(flag_color) if flag_color is not None else None,
+        frequency=ScheduledTransactionFrequency(frequency),
     )
     async with await _s.get_ynab_client() as client:
         scheduled_api = _s.ScheduledTransactionsApi(client)
@@ -1248,10 +1244,12 @@ async def get_transactions_by_category(
         accounts_api = _s.AccountsApi(client)
 
         accounts_response = accounts_api.get_accounts(budget_id)
-        account_map = {account.id: account.name for account in accounts_response.data.accounts}
+        account_map = {str(account.id): account.name for account in accounts_response.data.accounts}
+
+        parsed_since_date = date.fromisoformat(since_date) if since_date is not None else None
 
         response = transactions_api.get_transactions_by_category(
-            budget_id, category_id, since_date=since_date
+            budget_id, category_id, since_date=parsed_since_date
         )
         transactions = list(response.data.transactions or [])
 
@@ -1400,11 +1398,7 @@ async def split_transaction(
         wrapper = _s.PutTransactionWrapper(
             transaction=_s.ExistingTransaction(subtransactions=sub_transactions)
         )
-        transactions_api.update_transaction(
-            budget_id=budget_id,
-            transaction_id=transaction_id,
-            data=wrapper,
-        )
+        transactions_api.update_transaction(budget_id, transaction_id, wrapper)
 
     return (
         f"Transaction {transaction_id} split into {len(sub_transactions)} subtransactions "

@@ -6,6 +6,7 @@ attribute lookup on the `server` module so tests that do
 """
 
 from importlib.resources import files as _resource_files
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -13,8 +14,11 @@ import mcp.types as types
 
 from . import server as _s
 from .code_mode import generate_stubs
-from .formatters import _build_markdown_table, _format_dollar_amount, _render_month_markdown
+from .formatters import _build_markdown_table, _format_milliunits, _render_month_markdown
+from .money import currency_info_or_none, format_money
 from .tools.budgeting import _resolve_month
+
+logger = logging.getLogger(__name__)
 
 
 @_s.mcp.resource("ynab://preferences/budget_id")
@@ -102,12 +106,9 @@ async def list_budgets_resource() -> list[types.TextContent]:
         rows: list[list[str]] = []
         for budget in active:
             last_modified = getattr(budget, "last_modified_on", None)
+            isoformat = getattr(last_modified, "isoformat", None)
             last_modified_str = (
-                last_modified.isoformat()
-                if hasattr(last_modified, "isoformat")
-                else str(last_modified)
-                if last_modified
-                else ""
+                str(isoformat()) if callable(isoformat) else str(last_modified or "")
             )
             rows.append(
                 [
@@ -141,17 +142,37 @@ async def list_accounts_resource(budget_id: str) -> list[types.TextContent]:
             markdown += "_No accounts found._"
             return [types.TextContent(type="text", text=markdown)]
 
+        currency_format = getattr(response.data, "currency_format", None)
+        if currency_format is None:
+            budget = getattr(response.data, "budget", None)
+            currency_format = getattr(budget, "currency_format", None)
+        if currency_format is None:
+            # AccountsResponseData/Account carry no currency_format on SDK 4.3;
+            # fetch the plan's own currency metadata so non-USD budgets render
+            # with the correct symbol and decimal digits.
+            try:
+                plans_api = _s.PlansApi(client)
+                plan = plans_api.get_plan_by_id(budget_id).data.plan
+                currency_format = getattr(plan, "currency_format", None)
+            except Exception as exc:  # noqa: BLE001 — display metadata, never fatal
+                logger.debug("Currency lookup failed for budget %s: %s", budget_id, exc)
+        currency = currency_info_or_none(currency_format)
+
         headers = ["Name", "Type", "Balance", "ID"]
         align = ["left", "left", "right", "left"]
         rows: list[list[str]] = []
         for account in active:
-            balance_milliunits = getattr(account, "balance", 0) or 0
-            balance_dollars = float(balance_milliunits) / 1000
+            balance_milliunits = int(getattr(account, "balance", 0) or 0)
+            # Prefer the SDK's own currency-formatted balance field (str-typed;
+            # anything else — e.g. an unconfigured mock — falls back to ours).
+            balance_display = getattr(account, "balance_formatted", None)
+            if not isinstance(balance_display, str):
+                balance_display = format_money(balance_milliunits, currency)
             rows.append(
                 [
                     str(getattr(account, "name", "") or ""),
                     str(getattr(account, "type", "") or ""),
-                    _format_dollar_amount(balance_dollars),
+                    balance_display,
                     str(getattr(account, "id", "") or ""),
                 ]
             )
@@ -196,15 +217,15 @@ async def list_enriched_categories_resource(budget_id: str) -> list[types.TextCo
         for cat in active:
             cat_id = str(getattr(cat, "id", "") or "")
             name = str(getattr(cat, "name", "") or "")
-            budgeted = float(getattr(cat, "budgeted", 0) or 0) / 1000
-            activity = float(getattr(cat, "activity", 0) or 0) / 1000
-            balance = float(getattr(cat, "balance", 0) or 0) / 1000
+            budgeted = int(getattr(cat, "budgeted", 0) or 0)
+            activity = int(getattr(cat, "activity", 0) or 0)
+            balance = int(getattr(cat, "balance", 0) or 0)
             rows.append(
                 [
                     name,
-                    _format_dollar_amount(budgeted),
-                    _format_dollar_amount(activity),
-                    _format_dollar_amount(balance),
+                    _format_milliunits(budgeted),
+                    _format_milliunits(activity),
+                    _format_milliunits(balance),
                     cat_id,
                 ]
             )

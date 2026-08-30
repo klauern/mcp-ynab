@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, cast
 
 from ynab.models.category import Category
 
+from .money import CurrencyInfo, decimal_to_milliunits, format_money, milliunits_to_decimal
+
 
 def _get_empty_table(headers: List[str]) -> str:
     """Create an empty markdown table with just headers."""
@@ -61,7 +63,9 @@ def _build_markdown_table(
     return header_line + sep_line + row_lines
 
 
-def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _format_accounts_output(
+    accounts: List[Dict[str, Any]], currency: Optional[CurrencyInfo] = None
+) -> Dict[str, Any]:
     """Format account data into a user-friendly structure.
 
     All 13 official YNAB ``AccountType`` values are grouped and classified
@@ -132,26 +136,35 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
         if acct_type not in account_groups:
             account_groups[acct_type] = []
 
-        balance = float(account["balance"]) / 1000
+        balance_milliunits = int(account["balance"])
+        # Prefer the SDK's own currency-formatted balance when the API supplied
+        # it (official formatted field, always right for the plan's currency);
+        # fall back to our currency-aware renderer for mocks/legacy payloads.
+        # Str-typed only: an unconfigured mock's auto-attribute must not leak
+        # into display output.
+        balance_display = account.get("balance_formatted")
+        if not isinstance(balance_display, str):
+            balance_display = format_money(balance_milliunits, currency)
         account_groups[acct_type].append(
             {
                 "name": account["name"],
-                "balance": f"${balance:,.2f}",
-                "balance_raw": balance,
+                "balance": balance_display,
+                "balance_milliunits": balance_milliunits,
                 "id": account["id"],
             }
         )
 
     for group in account_groups.values():
-        group.sort(key=lambda x: abs(x["balance_raw"]), reverse=True)
+        group.sort(key=lambda x: abs(x["balance_milliunits"]), reverse=True)
 
     output: Dict[str, Any] = {
         "accounts": [],
-        "summary": {
-            "total_assets": 0.0,
-            "total_liabilities": 0.0,
-            "net_worth": 0.0,
-        },
+        "summary": {},
+    }
+    summary_milliunits = {
+        "total_assets": 0,
+        "total_liabilities": 0,
+        "net_worth": 0,
     }
 
     def _append_group(acct_type: str) -> None:
@@ -159,18 +172,20 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
             "type": type_display_names.get(acct_type, acct_type),
             "accounts": account_groups[acct_type],
         }
-        group_total = sum(acct["balance_raw"] for acct in account_groups[acct_type])
-        group_data["total"] = f"${group_total:,.2f}"
+        group_total_milliunits = sum(
+            acct["balance_milliunits"] for acct in account_groups[acct_type]
+        )
+        group_data["total"] = format_money(group_total_milliunits, currency)
 
         if acct_type in asset_types:
-            output["summary"]["total_assets"] += group_total
+            summary_milliunits["total_assets"] += group_total_milliunits
         elif acct_type in liability_types:
-            output["summary"]["total_liabilities"] += sum(
-                -min(acct["balance_raw"], 0.0) for acct in account_groups[acct_type]
+            summary_milliunits["total_liabilities"] += sum(
+                -min(acct["balance_milliunits"], 0) for acct in account_groups[acct_type]
             )
 
         if acct_type in asset_types or acct_type in liability_types:
-            output["summary"]["net_worth"] += group_total
+            summary_milliunits["net_worth"] += group_total_milliunits
 
         output["accounts"].append(group_data)
 
@@ -183,48 +198,71 @@ def _format_accounts_output(accounts: List[Dict[str, Any]]) -> Dict[str, Any]:
         if acct_type not in type_order and account_groups[acct_type]:
             _append_group(acct_type)
 
-    output["summary"]["net_worth_raw"] = output["summary"]["net_worth"]
-    output["summary"]["total_assets"] = _format_dollar_amount(output["summary"]["total_assets"])
-    output["summary"]["total_liabilities"] = _format_dollar_amount(
-        output["summary"]["total_liabilities"]
-    )
-    output["summary"]["net_worth"] = _format_dollar_amount(output["summary"]["net_worth_raw"])
+    output["summary"] = {
+        "total_assets": format_money(summary_milliunits["total_assets"], currency),
+        "total_liabilities": format_money(summary_milliunits["total_liabilities"], currency),
+        "net_worth": format_money(summary_milliunits["net_worth"], currency),
+        # Preserve the existing raw dollar field for compatibility. Derive it
+        # only after exact milliunit aggregation; display values never use it.
+        "net_worth_raw": float(milliunits_to_decimal(summary_milliunits["net_worth"])),
+    }
+
+    for group_data in output["accounts"]:
+        for account in group_data["accounts"]:
+            account.pop("balance_milliunits", None)
 
     return output
 
 
-def _process_category_data(category: Category | Dict[str, Any]) -> tuple[str, str, float, float]:
+def _process_category_data(category: Category | Dict[str, Any]) -> tuple[str, str, int, int]:
     """Process category data and return tuple of (id, name, budgeted, activity)."""
     if isinstance(category, Category):
-        return str(category.id), category.name, category.budgeted, category.activity
+        return str(category.id), category.name, int(category.budgeted), int(category.activity)
     cat_dict = cast(Dict[str, Any], category)
-    return cat_dict["id"], cat_dict["name"], cat_dict["budgeted"], cat_dict["activity"]
+    return (
+        cat_dict["id"],
+        cat_dict["name"],
+        int(cat_dict["budgeted"]),
+        int(cat_dict["activity"]),
+    )
 
 
 def _format_dollar_amount(amount: float) -> str:
-    """Format a dollar amount with proper sign and formatting."""
-    amount_str = f"${abs(amount):,.2f}"
-    return f"-{amount_str}" if amount < 0 else amount_str
+    """Backward-compatible USD formatter for existing callers.
+
+    Intentional policy change: money values now round half-up via
+    :func:`mcp_ynab.money.decimal_to_milliunits` instead of Python's binary
+    float formatting, so edge values like ``2.675`` render ``$2.68`` rather
+    than the old float artifact ``$2.67``.  Ordinary USD output (two decimal
+    places, thousands separators, leading minus) is unchanged.
+    """
+    return format_money(decimal_to_milliunits(amount))
+
+
+def _format_milliunits(amount: int) -> str:
+    """Format an API milliunit value without a float round-trip."""
+    return format_money(int(amount))
 
 
 def _render_month_markdown(month_detail: Any) -> str:
     """Render a YNAB MonthDetail as markdown: header, totals, per-group table."""
     month_value = getattr(month_detail, "month", None)
-    month_label = month_value.isoformat() if hasattr(month_value, "isoformat") else str(month_value)
+    isoformat = getattr(month_value, "isoformat", None)
+    month_label = str(isoformat()) if callable(isoformat) else str(month_value)
 
-    rta = float(getattr(month_detail, "to_be_budgeted", 0) or 0) / 1000
-    income = float(getattr(month_detail, "income", 0) or 0) / 1000
-    budgeted = float(getattr(month_detail, "budgeted", 0) or 0) / 1000
-    activity = float(getattr(month_detail, "activity", 0) or 0) / 1000
+    rta = int(getattr(month_detail, "to_be_budgeted", 0) or 0)
+    income = int(getattr(month_detail, "income", 0) or 0)
+    budgeted = int(getattr(month_detail, "budgeted", 0) or 0)
+    activity = int(getattr(month_detail, "activity", 0) or 0)
     age_of_money = getattr(month_detail, "age_of_money", None)
 
     md = f"# YNAB Month: {month_label}\n\n"
     md += "## Summary\n"
-    md += f"- **Ready to Assign:** {_format_dollar_amount(rta)}\n"
+    md += f"- **Ready to Assign:** {_format_milliunits(rta)}\n"
     md += f"- **Age of Money:** {age_of_money if age_of_money is not None else 'N/A'} days\n"
-    md += f"- **Income:** {_format_dollar_amount(income)}\n"
-    md += f"- **Budgeted:** {_format_dollar_amount(budgeted)}\n"
-    md += f"- **Activity:** {_format_dollar_amount(activity)}\n\n"
+    md += f"- **Income:** {_format_milliunits(income)}\n"
+    md += f"- **Budgeted:** {_format_milliunits(budgeted)}\n"
+    md += f"- **Activity:** {_format_milliunits(activity)}\n\n"
 
     categories: List[Any] = list(getattr(month_detail, "categories", []) or [])
     grouped: Dict[str, List[Any]] = {}
@@ -242,16 +280,16 @@ def _render_month_markdown(month_detail: Any) -> str:
         for cat in grouped[group_name]:
             cat_id = getattr(cat, "id", "")
             name = getattr(cat, "name", "")
-            b = float(getattr(cat, "budgeted", 0) or 0) / 1000
-            a = float(getattr(cat, "activity", 0) or 0) / 1000
-            bal = float(getattr(cat, "balance", 0) or 0) / 1000
+            b = int(getattr(cat, "budgeted", 0) or 0)
+            a = int(getattr(cat, "activity", 0) or 0)
+            bal = int(getattr(cat, "balance", 0) or 0)
             rows.append(
                 [
                     str(cat_id),
                     str(name),
-                    _format_dollar_amount(b),
-                    _format_dollar_amount(a),
-                    _format_dollar_amount(bal),
+                    _format_milliunits(b),
+                    _format_milliunits(a),
+                    _format_milliunits(bal),
                 ]
             )
         md += _build_markdown_table(rows, headers, align) + "\n"
@@ -263,9 +301,9 @@ def _render_month_category_markdown(category: Any) -> str:
     """Render a single Category's month detail as markdown."""
     name = getattr(category, "name", "Unknown")
     cat_id = getattr(category, "id", "")
-    budgeted = float(getattr(category, "budgeted", 0) or 0) / 1000
-    activity = float(getattr(category, "activity", 0) or 0) / 1000
-    balance = float(getattr(category, "balance", 0) or 0) / 1000
+    budgeted = int(getattr(category, "budgeted", 0) or 0)
+    activity = int(getattr(category, "activity", 0) or 0)
+    balance = int(getattr(category, "balance", 0) or 0)
     goal_type = getattr(category, "goal_type", None)
     goal_target = getattr(category, "goal_target", None)
     goal_pct = getattr(category, "goal_percentage_complete", None)
@@ -273,12 +311,12 @@ def _render_month_category_markdown(category: Any) -> str:
 
     md = f"# {name}\n\n"
     md += f"- **ID:** {cat_id}\n"
-    md += f"- **Budgeted:** {_format_dollar_amount(budgeted)}\n"
-    md += f"- **Activity:** {_format_dollar_amount(activity)}\n"
-    md += f"- **Balance:** {_format_dollar_amount(balance)}\n"
+    md += f"- **Budgeted:** {_format_milliunits(budgeted)}\n"
+    md += f"- **Activity:** {_format_milliunits(activity)}\n"
+    md += f"- **Balance:** {_format_milliunits(balance)}\n"
     if goal_type:
-        target = float(goal_target or 0) / 1000
-        md += f"- **Goal:** {goal_type} (target {_format_dollar_amount(target)}"
+        target = int(goal_target or 0)
+        md += f"- **Goal:** {goal_type} (target {_format_milliunits(target)}"
         if goal_pct is not None:
             md += f", {goal_pct}% complete"
         md += ")\n"

@@ -35,6 +35,18 @@ def test_format_accounts_output_groups_and_summary() -> None:
     assert formatted["summary"]["net_worth"] == "$150.00"
 
 
+def test_format_accounts_output_preserves_large_milliunit_precision() -> None:
+    balance = 9_007_199_254_740_044
+
+    formatted = server._format_accounts_output([_account("Large", "checking", balance)])
+
+    expected = "$9,007,199,254,740.04"
+    assert formatted["accounts"][0]["accounts"][0]["balance"] == expected
+    assert formatted["accounts"][0]["total"] == expected
+    assert formatted["summary"]["total_assets"] == expected
+    assert formatted["summary"]["net_worth"] == expected
+
+
 ALL_OFFICIAL_ACCOUNT_TYPES = [
     "checking",
     "savings",
@@ -511,8 +523,7 @@ async def test_categorize_transaction_id_path_skips_fetch_and_patches_only_categ
     mock_ynab_apis.transactions.get_transaction_by_id.assert_not_called()
     mock_ynab_apis.transactions.get_transactions.assert_not_called()
     call = mock_ynab_apis.transactions.update_transaction.call_args
-    assert call.kwargs["budget_id"] == "budget-1"
-    assert call.kwargs["transaction_id"] == "tx-1"
+    assert call.args[:2] == ("budget-1", "tx-1")
     assert captured_kwargs == {"category_id": "cat-1"}
 
 

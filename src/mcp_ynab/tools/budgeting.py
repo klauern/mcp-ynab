@@ -8,9 +8,12 @@ through late attribute lookup. Pure formatting helpers are imported from
 """
 
 from datetime import date, timedelta
+import logging
 from typing import Any, Dict, List, Literal, Optional, cast
+from uuid import UUID
 
 from mcp.server.fastmcp import Context
+from ynab.api_client import ApiClient
 from ynab.models.account import Account
 from ynab.models.category_group_with_categories import CategoryGroupWithCategories
 from ynab.models.patch_category_wrapper import PatchCategoryWrapper
@@ -21,15 +24,19 @@ from ynab.models.save_payee import SavePayee
 from ynab.models.save_transaction_with_id_or_import_id import SaveTransactionWithIdOrImportId
 
 from .. import server as _s
-from ..date_bounds import ALL_HISTORY_SINCE_DATE
+from ..date_bounds import ALL_HISTORY_SINCE_DATE, utc_today
+from ..money import currency_info_or_none, decimal_to_milliunits
 from ..formatters import (
     _build_markdown_table,
     _format_accounts_output,
     _format_dollar_amount,
+    _format_milliunits,
     _process_category_data,
     _render_month_category_markdown,
     _render_month_markdown,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_month(month: str) -> date:
@@ -40,8 +47,24 @@ def _resolve_month(month: str) -> date:
     Pydantic-strict `datetime.date` annotation accepting raw strings.
     """
     if month == "current":
-        return date.today().replace(day=1)
+        return utc_today().replace(day=1)
     return date.fromisoformat(month)
+
+
+async def _resolve_budget_currency_format(client: ApiClient, budget_id: str) -> Any:
+    """Return the plan's ``currency_format`` object, or ``None`` if unavailable.
+
+    Account responses do not carry currency metadata on SDK 4.3, so tools that
+    render account balances look the budget up once.  Failures degrade to
+    ``None`` (the USD display fallback) rather than breaking the account read.
+    """
+    try:
+        plans_api = _s.PlansApi(client)
+        plan = plans_api.get_plan_by_id(budget_id).data.plan
+        return getattr(plan, "currency_format", None)
+    except Exception as exc:  # noqa: BLE001 — currency is display metadata, never fatal
+        logger.debug("Currency lookup failed for budget %s: %s", budget_id, exc)
+        return None
 
 
 @_s.mcp.tool(annotations=_s.READ_ONLY_TOOL)
@@ -50,7 +73,7 @@ async def get_account_balance(account_id: str, ctx: Optional[Context] = None) ->
     async with await _s.get_ynab_client() as client:
         accounts_api = _s.AccountsApi(client)
         budget_id = await _s._resolve_budget_id(client, ctx)
-        response = accounts_api.get_account_by_id(budget_id, account_id)
+        response = accounts_api.get_account_by_id(budget_id, cast(UUID, account_id))
         return float(response.data.account.balance) / 1000
 
 
@@ -83,7 +106,9 @@ async def get_accounts(budget_id: str) -> str:
             if isinstance(account, Account):
                 all_accounts.append(account.to_dict())
 
-        formatted = _format_accounts_output(all_accounts)
+        currency_format = await _resolve_budget_currency_format(client, budget_id)
+        currency = currency_info_or_none(currency_format)
+        formatted = _format_accounts_output(all_accounts, currency=currency)
 
         markdown = "# YNAB Account Summary\n\n"
         markdown += "## Summary\n"
@@ -140,15 +165,13 @@ async def get_categories(budget_id: str) -> str:
 
             for category in categories_list:
                 cat_id, name, budgeted, activity = _process_category_data(category)
-                budgeted_dollars = float(budgeted) / 1000 if budgeted else 0
-                activity_dollars = float(activity) / 1000 if activity else 0
 
                 rows.append(
                     [
                         cat_id,
                         name,
-                        _format_dollar_amount(budgeted_dollars),
-                        _format_dollar_amount(activity_dollars),
+                        _format_milliunits(budgeted),
+                        _format_milliunits(activity),
                     ]
                 )
 
@@ -234,7 +257,9 @@ async def assign_money(
     (does not delta) the budgeted value, so calling twice with the same
     amount is idempotent.
     """
-    body = _s.PatchMonthCategoryWrapper(category=_s.SaveMonthCategory(budgeted=int(amount * 1000)))
+    body = _s.PatchMonthCategoryWrapper(
+        category=_s.SaveMonthCategory(budgeted=decimal_to_milliunits(amount))
+    )
     async with await _s.get_ynab_client() as client:
         cats = _s.CategoriesApi(client)
         response = cats.update_month_category(budget_id, _resolve_month(month), category_id, body)
@@ -316,7 +341,7 @@ async def move_money(
     if from_category_id == to_category_id:
         raise ValueError("from_category_id and to_category_id must be different.")
 
-    delta = int(amount * 1000)
+    delta = decimal_to_milliunits(amount)
     m = _resolve_month(month)
     async with await _s.get_ynab_client() as client:
         cats = _s.CategoriesApi(client)
@@ -402,7 +427,7 @@ async def update_category(
             "At least one of name, note, category_group_id, goal_target, "
             "goal_target_date, or goal_needs_whole_amount must be provided."
         )
-    goal_target_milliunits = int(round(goal_target * 1000)) if goal_target is not None else None
+    goal_target_milliunits = decimal_to_milliunits(goal_target) if goal_target is not None else None
     # `is not None` (not truthiness) so an empty string raises a clear ValueError
     # rather than silently slipping past the guard above as a no-op update.
     parsed_goal_date = (
@@ -414,7 +439,7 @@ async def update_category(
         category=ExistingCategory(
             name=name,
             note=note,
-            category_group_id=category_group_id,
+            category_group_id=cast(Optional[UUID], category_group_id),
             goal_target=goal_target_milliunits,
             goal_target_date=parsed_goal_date,
             goal_needs_whole_amount=goal_needs_whole_amount,
@@ -524,7 +549,9 @@ async def merge_payees(
         if txn_ids:
             patch_payload = PatchTransactionsWrapper(
                 transactions=[
-                    SaveTransactionWithIdOrImportId(id=tid, payee_id=destination_payee_id)
+                    SaveTransactionWithIdOrImportId(
+                        id=tid, payee_id=cast(UUID, destination_payee_id)
+                    )
                     for tid in txn_ids
                 ]
             )
@@ -564,7 +591,7 @@ def _resolve_period_range(period: _Period) -> tuple[date, Optional[date]]:
     today). YNAB's ``get_transactions`` only takes ``since_date``; the upper
     bound is enforced client-side after the fetch.
     """
-    today = date.today()
+    today = utc_today()
     if period == "this_month":
         return today.replace(day=1), None
     if period == "last_month":

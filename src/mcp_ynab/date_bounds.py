@@ -7,9 +7,19 @@ older transactions cannot silently vanish from results while the tool
 reports a complete answer.
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 # Far-past bound meaning "all history". YNAB accepts arbitrary ISO dates
 # for ``since_date``; every real budget post-dates 1970, and an explicit
 # bound is strictly safer than the API's implicit one-year truncation.
 ALL_HISTORY_SINCE_DATE = date(1970, 1, 1)
+
+
+def utc_now() -> datetime:
+    """Return the current timezone-aware UTC datetime."""
+    return datetime.now(timezone.utc)
+
+
+def utc_today() -> date:
+    """Return today's date according to UTC."""
+    return utc_now().date()

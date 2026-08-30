@@ -181,6 +181,30 @@ async def test_get_category_for_month_renders_detail(
     assert args.args == ("budget-1", date(2026, 5, 1), "c-1")
 
 
+@pytest.mark.asyncio
+async def test_get_category_for_month_preserves_large_milliunit_precision(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    amount = 9_007_199_254_741_005
+    cat = _category_mock(
+        "c-1",
+        "Large",
+        budgeted=amount,
+        activity=-amount,
+        balance=amount,
+        goal_type="TB",
+        goal_target=amount,
+    )
+    mock_ynab_apis.categories.get_month_category_by_id.return_value = _resp(category=cat)
+
+    result = await server.get_category_for_month("budget-1", "c-1", "2026-05-01")
+
+    assert "Budgeted:** $9,007,199,254,741.01" in result
+    assert "Activity:** -$9,007,199,254,741.01" in result
+    assert "Balance:** $9,007,199,254,741.01" in result
+    assert "Goal:** TB (target $9,007,199,254,741.01" in result
+
+
 # ---------------------------------------------------------------------------
 # assign_money
 # ---------------------------------------------------------------------------

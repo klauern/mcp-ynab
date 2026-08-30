@@ -1,13 +1,16 @@
 """File-backed user preferences and category cache for the YNAB MCP server.
 
-`YNABResources` persists the user's preferred budget id and a per-budget
-category cache under the resolved config directory. `Preferences` is the
-typed Pydantic model for ``preferences.json`` (the 3 user-configurable
-fields). The category cache lives in a separate ``category_cache.json``
-under the same dir, keyed by budget id with `{last_refreshed, records}`
-envelopes so we can answer freshness questions without refetching. JSON
-helpers tolerate missing files (return `{}`) and corrupt files (warn +
-return `{}`) so first-run and recovery paths just work.
+`YNABResources` persists the user's preferred budget id, per-budget category
+and payee caches, and per-budget/resource delta knowledge under the resolved
+config directory. `Preferences` is the typed Pydantic model for
+``preferences.json`` (the 3 user-configurable fields). The category and payee
+caches live in separate files under the same dir, keyed by budget id with
+`{last_refreshed, records}` envelopes so we can answer freshness
+questions without refetching. Delta knowledge lives independently in
+``knowledge.json`` as `{budget_id: {resource_name: server_knowledge}}`; it is a
+large, variable runtime cache rather than user configuration. JSON helpers
+tolerate missing files (return `{}`) and corrupt files (warn + return `{}`) so
+first-run and recovery paths just work.
 
 A one-shot migration runs on `YNABResources.__init__` if the legacy
 `preferred_budget_id.json` + `budget_category_cache.json` pair exists
@@ -20,6 +23,7 @@ forcing a fresh fetch instead of trusting an unknown-age timestamp.
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -34,6 +38,7 @@ logger = logging.getLogger(__name__)
 PREFERENCES_FILENAME = "preferences.json"
 CATEGORY_CACHE_FILENAME = "category_cache.json"
 PAYEES_CACHE_FILENAME = "payees_cache.json"
+KNOWLEDGE_FILENAME = "knowledge.json"
 LEGACY_PREFERRED_BUDGET_FILENAME = "preferred_budget_id.json"
 LEGACY_CATEGORY_CACHE_FILENAME = "budget_category_cache.json"
 PREF_ENV_PREFIX = "MCP_YNAB_"
@@ -61,16 +66,88 @@ def _save_json_file(filename: str | Path, data: Dict[str, Any]) -> None:
 
 
 def _atomic_write_json(filename: Path, data: Dict[str, Any]) -> None:
-    """Write JSON to ``filename`` atomically via a sibling tempfile + os.replace.
+    """Write JSON to ``filename`` atomically via a unique tempfile + os.replace.
+
+    The tempfile is created in the same directory (so ``os.replace`` stays on
+    one filesystem) with a unique name so concurrent writers cannot clobber
+    each other's in-flight file.  On any serialization/write failure the temp
+    file is removed and the previous contents of ``filename`` are untouched.
 
     ``default=str`` coerces non-JSON-native values (notably ``uuid.UUID`` ids
     from ynab >=2.x ``Category.to_dict()``, which ``json.dump`` would otherwise
     reject) to their string form — cache records are str-compared on read.
     """
-    tmp = filename.with_suffix(filename.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
-    os.replace(tmp, filename)
+    tmp: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=filename.parent,
+            prefix=filename.name + ".",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            tmp = Path(f.name)
+            json.dump(data, f, indent=2, default=str)
+        os.replace(tmp, filename)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def merge_delta_into_records(
+    existing: List[Dict[str, Any]], delta: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Merge YNAB delta records into a full record list without mutating either input.
+
+    Records with an ``id`` are upserted by id. A delta record with ``deleted=True``
+    is a tombstone and removes every cached record with that id. Records absent
+    from the delta are preserved. Records without an ``id`` are retained as-is
+    defensively; an id-less delta record is appended because it cannot safely
+    identify an existing record.
+    """
+    missing_id = object()
+
+    def record_id(record: Dict[str, Any]) -> object:
+        if "id" not in record:
+            return missing_id
+        value = record["id"]
+        try:
+            hash(value)
+        except TypeError:
+            # An unhashable id is no safer to merge than a missing id.
+            return missing_id
+        return value
+
+    merged = [dict(record) for record in existing]
+    positions: Dict[object, int] = {}
+    for index, record in enumerate(merged):
+        key = record_id(record)
+        if key is not missing_id:
+            positions[key] = index
+
+    for record in delta:
+        key = record_id(record)
+        if key is missing_id:
+            merged.append(dict(record))
+        elif record.get("deleted") is True:
+            merged = [cached for cached in merged if record_id(cached) != key]
+            positions = {
+                cached_key: index
+                for index, cached in enumerate(merged)
+                if (cached_key := record_id(cached)) is not missing_id
+            }
+        elif key in positions:
+            merged[positions[key]] = dict(record)
+        else:
+            positions[key] = len(merged)
+            merged.append(dict(record))
+
+    return merged
 
 
 def _parse_bool_value(raw: str, name: str) -> bool:
@@ -222,6 +299,8 @@ class YNABResources:
         - get_preferred_budget_id / set_preferred_budget_id
         - get_cached_category_records / get_cached_categories / cache_categories
         - is_cache_stale (new in 6ha.3)
+        - get_knowledge / set_knowledge (per-budget/resource delta tokens)
+        - commit_knowledge_and_records (ordered records + knowledge commit)
         - preferences (read/write the typed model)
     """
 
@@ -231,11 +310,38 @@ class YNABResources:
         self._preferences_file = self._config_dir / PREFERENCES_FILENAME
         self._category_cache_file = self._config_dir / CATEGORY_CACHE_FILENAME
         self._payees_cache_file = self._config_dir / PAYEES_CACHE_FILENAME
+        self._knowledge_file = self._config_dir / KNOWLEDGE_FILENAME
         self._migrate_legacy_files_if_needed()
         self._preferences: Preferences = load_preferences(self._config_dir)
         # On-disk shape: {budget_id: {"last_refreshed": iso8601 | None, "records": [...]}}.
         self._category_cache: Dict[str, Dict[str, Any]] = _load_json_file(self._category_cache_file)
         self._payees_cache: Dict[str, Dict[str, Any]] = _load_json_file(self._payees_cache_file)
+        self._knowledge = self._load_knowledge()
+
+    def _load_knowledge(self) -> Dict[str, Dict[str, int]]:
+        """Load and validate ``knowledge.json``; malformed state becomes empty."""
+        raw = _load_json_file(self._knowledge_file)
+        if not isinstance(raw, dict):
+            logger.warning("Invalid knowledge data in %s; treating as empty", self._knowledge_file)
+            return {}
+
+        knowledge: Dict[str, Dict[str, int]] = {}
+        for budget_id, resources in raw.items():
+            if not isinstance(budget_id, str) or not isinstance(resources, dict):
+                logger.warning(
+                    "Invalid knowledge data in %s; treating as empty", self._knowledge_file
+                )
+                return {}
+            tokens: Dict[str, int] = {}
+            for resource, token in resources.items():
+                if not isinstance(resource, str) or type(token) is not int or token < 0:
+                    logger.warning(
+                        "Invalid knowledge data in %s; treating as empty", self._knowledge_file
+                    )
+                    return {}
+                tokens[resource] = token
+            knowledge[budget_id] = tokens
+        return knowledge
 
     def _migrate_legacy_files_if_needed(self) -> None:
         """One-shot lift of legacy files into the new layout. Idempotent.
@@ -312,6 +418,70 @@ class YNABResources:
     def set_preferred_budget_id(self, budget_id: str) -> None:
         """Set the preferred budget ID and persist preferences.json."""
         self.update_preferences(default_budget_id=budget_id)
+
+    @staticmethod
+    def _validate_knowledge_token(token: int) -> None:
+        """Validate a YNAB server knowledge token before it reaches disk."""
+        if type(token) is not int or token < 0:
+            raise ValueError("knowledge token must be an int greater than or equal to 0")
+
+    def get_knowledge(self, budget_id: str, resource: str) -> Optional[int]:
+        """Return the saved token for ``(budget_id, resource)``, or ``None``.
+
+        Knowledge is a per-resource runtime cursor. Callers must only advance it
+        after the corresponding fetch and record persistence have fully succeeded.
+        """
+        token = self._knowledge.get(budget_id, {}).get(resource)
+        return token if type(token) is int and token >= 0 else None
+
+    def set_knowledge(self, budget_id: str, resource: str, token: int) -> None:
+        """Atomically persist a token after a fully successful fetch.
+
+        Callers MUST persist the fetched records first and call this method only
+        after the fetch fully succeeded. Partial failures must not advance
+        knowledge; retaining the old token causes the next fetch to retry safely.
+        Prefer :meth:`commit_knowledge_and_records` when both values are changing.
+        """
+        self._validate_knowledge_token(token)
+        knowledge = {budget: dict(tokens) for budget, tokens in self._knowledge.items()}
+        knowledge.setdefault(budget_id, {})[resource] = token
+        _atomic_write_json(self._knowledge_file, knowledge)
+        self._knowledge = knowledge
+
+    def commit_knowledge_and_records(
+        self,
+        budget_id: str,
+        resource: str,
+        records: List[Dict[str, Any]],
+        new_knowledge: int,
+        cache_file: str | Path,
+    ) -> None:
+        """Persist complete records and their token in a safe ordered commit.
+
+        ``cache_file`` uses a generic ``{budget_id: records}`` JSON shape. The
+        records write happens first via :func:`_atomic_write_json`; knowledge is
+        written only after that succeeds, so a failed fetch or records write can
+        never advance the cursor. Each file replacement is atomic, but the two
+        separate files cannot be replaced as one filesystem transaction. If the
+        knowledge write fails after the records write, the old token remains in
+        place and the next delta fetch safely retries against the newer cache.
+        """
+        self._validate_knowledge_token(new_knowledge)
+        cache_path = Path(cache_file)
+        if cache_path == self._knowledge_file:
+            raise ValueError("cache_file must be separate from knowledge.json")
+
+        cache_data = _load_json_file(cache_path)
+        if not isinstance(cache_data, dict):
+            logger.warning("Invalid cache data in %s; replacing it", cache_path)
+            cache_data = {}
+        cache_data[budget_id] = list(records)
+        _atomic_write_json(cache_path, cache_data)
+
+        knowledge = {budget: dict(tokens) for budget, tokens in self._knowledge.items()}
+        knowledge.setdefault(budget_id, {})[resource] = new_knowledge
+        _atomic_write_json(self._knowledge_file, knowledge)
+        self._knowledge = knowledge
 
     def _records_for(self, budget_id: str) -> List[Dict[str, Any]]:
         """Return the bare records list for ``budget_id`` (envelope-aware)."""

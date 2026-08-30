@@ -296,7 +296,7 @@ def api_adapter(
 
                 try:
                     if resolved_annotations.readOnlyHint is True:
-                        response = _errors.run_with_retry(
+                        response = await _errors.run_with_retry(
                             lambda: sdk_method(**call_kwargs),
                             idempotent=True,
                             max_attempts=READ_MAX_ATTEMPTS,

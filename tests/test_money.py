@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mcp_ynab import date_bounds
 from mcp_ynab.date_bounds import utc_now, utc_today
 from mcp_ynab.money import (
     CurrencyInfo,
@@ -102,10 +103,16 @@ def test_default_usd_format_is_compatible() -> None:
     assert format_money(-12_340) == "-$12.34"
 
 
-def test_utc_helpers_are_aware_and_date_is_derived_from_utc_now() -> None:
+def test_utc_helpers_are_aware_and_date_is_derived_from_utc_now(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     now = utc_now()
     assert now.tzinfo == timezone.utc
-    assert utc_today() == now.date()
+
+    fixed_now = datetime(2026, 1, 2, 23, 59, 59, tzinfo=timezone.utc)
+    monkeypatch.setattr(date_bounds, "utc_now", lambda: fixed_now)
+
+    assert utc_today() == fixed_now.date()
 
 
 def test_budgeting_current_month_uses_utc_today(monkeypatch: pytest.MonkeyPatch) -> None:

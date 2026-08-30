@@ -14,7 +14,7 @@ import mcp.types as types
 
 from . import server as _s
 from .code_mode import generate_stubs
-from .formatters import _build_markdown_table, _format_dollar_amount, _render_month_markdown
+from .formatters import _build_markdown_table, _format_milliunits, _render_month_markdown
 from .money import currency_info_or_none, format_money
 from .tools.budgeting import _resolve_month
 
@@ -217,15 +217,15 @@ async def list_enriched_categories_resource(budget_id: str) -> list[types.TextCo
         for cat in active:
             cat_id = str(getattr(cat, "id", "") or "")
             name = str(getattr(cat, "name", "") or "")
-            budgeted = float(getattr(cat, "budgeted", 0) or 0) / 1000
-            activity = float(getattr(cat, "activity", 0) or 0) / 1000
-            balance = float(getattr(cat, "balance", 0) or 0) / 1000
+            budgeted = int(getattr(cat, "budgeted", 0) or 0)
+            activity = int(getattr(cat, "activity", 0) or 0)
+            balance = int(getattr(cat, "balance", 0) or 0)
             rows.append(
                 [
                     name,
-                    _format_dollar_amount(budgeted),
-                    _format_dollar_amount(activity),
-                    _format_dollar_amount(balance),
+                    _format_milliunits(budgeted),
+                    _format_milliunits(activity),
+                    _format_milliunits(balance),
                     cat_id,
                 ]
             )

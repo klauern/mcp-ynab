@@ -7,6 +7,7 @@ and emit an INFO log entry for every retry attempt.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -14,7 +15,6 @@ import json
 import logging
 import math
 import random
-import time
 from typing import Any, Callable, Optional
 
 from ynab.rest import ApiException
@@ -116,7 +116,7 @@ def normalize_api_exception(exc: ApiException) -> YNABAPIError:
         )
 
 
-def run_with_retry(
+async def run_with_retry(
     fn: Callable[[], Any],
     *,
     idempotent: bool,
@@ -159,7 +159,7 @@ def run_with_retry(
                 max_attempts,
                 delay,
             )
-            time.sleep(delay)
+            await asyncio.sleep(delay)
 
     # The loop either returns or raises from the final attempt.
     raise RuntimeError("retry loop terminated unexpectedly")  # pragma: no cover

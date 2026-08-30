@@ -30,6 +30,7 @@ from ..formatters import (
     _build_markdown_table,
     _format_accounts_output,
     _format_dollar_amount,
+    _format_milliunits,
     _process_category_data,
     _render_month_category_markdown,
     _render_month_markdown,
@@ -164,15 +165,13 @@ async def get_categories(budget_id: str) -> str:
 
             for category in categories_list:
                 cat_id, name, budgeted, activity = _process_category_data(category)
-                budgeted_dollars = float(budgeted) / 1000 if budgeted else 0
-                activity_dollars = float(activity) / 1000 if activity else 0
 
                 rows.append(
                     [
                         cat_id,
                         name,
-                        _format_dollar_amount(budgeted_dollars),
-                        _format_dollar_amount(activity_dollars),
+                        _format_milliunits(budgeted),
+                        _format_milliunits(activity),
                     ]
                 )
 

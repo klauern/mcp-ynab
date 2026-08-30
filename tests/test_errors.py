@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from email.utils import format_datetime
 from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+from unittest.mock import AsyncMock
 
 import pytest
 from ynab.rest import ApiException
@@ -112,7 +114,8 @@ def test_is_retryable_status_only_includes_transient_read_statuses() -> None:
     assert not errors.is_retryable_status(None)
 
 
-def test_run_with_retry_retries_idempotent_read_then_returns_result(
+@pytest.mark.asyncio
+async def test_run_with_retry_retries_idempotent_read_then_returns_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     failures = [make_api_exception(500)]
@@ -126,15 +129,18 @@ def test_run_with_retry_retries_idempotent_read_then_returns_result(
             raise failures.pop()
         return "ok"
 
-    monkeypatch.setattr(errors.time, "sleep", delays.append)
+    monkeypatch.setattr(errors.asyncio, "sleep", AsyncMock(side_effect=delays.append))
     monkeypatch.setattr(errors.random, "uniform", lambda _start, _end: 0.0)
 
-    assert errors.run_with_retry(read, idempotent=True, base_delay=0.5) == "ok"
+    assert await errors.run_with_retry(read, idempotent=True, base_delay=0.5) == "ok"
     assert calls == 2
     assert delays == [0.5]
 
 
-def test_run_with_retry_honors_retry_after_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_run_with_retry_honors_retry_after_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = 0
     delays: list[float] = []
 
@@ -145,16 +151,19 @@ def test_run_with_retry_honors_retry_after_seconds(monkeypatch: pytest.MonkeyPat
             raise make_api_exception(429, headers={"Retry-After": "5"})
         return "ok"
 
-    monkeypatch.setattr(errors.time, "sleep", delays.append)
+    monkeypatch.setattr(errors.asyncio, "sleep", AsyncMock(side_effect=delays.append))
     monkeypatch.setattr(errors.random, "uniform", lambda _start, _end: 0.0)
 
-    assert errors.run_with_retry(read, idempotent=True, base_delay=0.01) == "ok"
+    assert await errors.run_with_retry(read, idempotent=True, base_delay=0.01) == "ok"
     assert calls == 2
     assert delays[0] >= 5
     assert delays[0] < 6
 
 
-def test_run_with_retry_honors_retry_after_http_date(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_run_with_retry_honors_retry_after_http_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     delays: list[float] = []
     retry_at = datetime.now(timezone.utc) + timedelta(seconds=4)
     calls = 0
@@ -169,10 +178,10 @@ def test_run_with_retry_honors_retry_after_http_date(monkeypatch: pytest.MonkeyP
             )
         return "ok"
 
-    monkeypatch.setattr(errors.time, "sleep", delays.append)
+    monkeypatch.setattr(errors.asyncio, "sleep", AsyncMock(side_effect=delays.append))
     monkeypatch.setattr(errors.random, "uniform", lambda _start, _end: 0.0)
 
-    assert errors.run_with_retry(read, idempotent=True, base_delay=0.01) == "ok"
+    assert await errors.run_with_retry(read, idempotent=True, base_delay=0.01) == "ok"
 
 
 @pytest.mark.parametrize(
@@ -185,12 +194,12 @@ def test_run_with_retry_honors_retry_after_http_date(monkeypatch: pytest.MonkeyP
         ("3", 3.0),  # ordinary value passes through
     ],
 )
-def test_retry_after_seconds_rejects_or_caps_hostile_values(
+@pytest.mark.asyncio
+async def test_retry_after_seconds_rejects_or_caps_hostile_values(
     raw: str, expected: float | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Retry-After must never stall a read indefinitely (inf/NaN/huge caps)."""
     exc = make_api_exception(429, headers={"Retry-After": raw})
-    monkeypatch.setattr(errors.time, "sleep", lambda _delay: None)
     monkeypatch.setattr(errors.random, "uniform", lambda _start, _end: 0.0)
 
     result = errors._retry_after_seconds(exc)
@@ -211,15 +220,16 @@ def test_retry_after_seconds_rejects_or_caps_hostile_values(
             raise make_api_exception(429, headers={"Retry-After": raw})
         return "ok"
 
-    monkeypatch.setattr(errors.time, "sleep", delays.append)
-    errors.run_with_retry(read, idempotent=True, max_attempts=2, base_delay=0.0)
+    monkeypatch.setattr(errors.asyncio, "sleep", AsyncMock(side_effect=delays.append))
+    await errors.run_with_retry(read, idempotent=True, max_attempts=2, base_delay=0.0)
     if expected is None:
         assert delays and delays[0] < 1.0  # fell back to (tiny) exponential backoff
     else:
         assert delays and delays[0] <= errors._MAX_RETRY_AFTER_SECONDS
 
 
-def test_run_with_retry_bounds_attempts_and_logs_retries(
+@pytest.mark.asyncio
+async def test_run_with_retry_bounds_attempts_and_logs_retries(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = 0
@@ -230,12 +240,12 @@ def test_run_with_retry_bounds_attempts_and_logs_retries(
         calls += 1
         raise make_api_exception(500, reason="still down")
 
-    monkeypatch.setattr(errors.time, "sleep", delays.append)
+    monkeypatch.setattr(errors.asyncio, "sleep", AsyncMock(side_effect=delays.append))
     monkeypatch.setattr(errors.random, "uniform", lambda _start, _end: 0.0)
 
     with caplog.at_level(logging.INFO, logger="mcp_ynab.errors"):
         with pytest.raises(errors.YNABAPIError) as raised:
-            errors.run_with_retry(read, idempotent=True, max_attempts=3, base_delay=0.25)
+            await errors.run_with_retry(read, idempotent=True, max_attempts=3, base_delay=0.25)
 
     assert calls == 3
     assert raised.value.status == 500
@@ -246,7 +256,8 @@ def test_run_with_retry_bounds_attempts_and_logs_retries(
 
 
 @pytest.mark.parametrize("status", [429, 500])
-def test_run_with_retry_never_retries_non_idempotent_write(
+@pytest.mark.asyncio
+async def test_run_with_retry_never_retries_non_idempotent_write(
     status: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = 0
@@ -257,7 +268,7 @@ def test_run_with_retry_never_retries_non_idempotent_write(
         raise make_api_exception(status)
 
     with pytest.raises(errors.YNABAPIError) as raised:
-        errors.run_with_retry(write, idempotent=False, max_attempts=3)
+        await errors.run_with_retry(write, idempotent=False, max_attempts=3)
 
     assert calls == 1
     assert raised.value.status == status
@@ -266,16 +277,54 @@ def test_run_with_retry_never_retries_non_idempotent_write(
     )
 
 
-def test_run_with_retry_propagates_non_api_exception_unchanged() -> None:
+@pytest.mark.asyncio
+async def test_run_with_retry_propagates_non_api_exception_unchanged() -> None:
     original = RuntimeError("local failure")
 
     def read() -> None:
         raise original
 
     with pytest.raises(RuntimeError) as raised:
-        errors.run_with_retry(read, idempotent=True)
+        await errors.run_with_retry(read, idempotent=True)
 
     assert raised.value is original
+
+
+@pytest.mark.asyncio
+async def test_run_with_retry_yields_to_peer_during_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backoff_started = asyncio.Event()
+    release_backoff = asyncio.Event()
+    peer_ran = asyncio.Event()
+    calls = 0
+
+    async def wait_for_release(_delay: float) -> None:
+        backoff_started.set()
+        await release_backoff.wait()
+
+    def read() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise make_api_exception(500)
+        return "ok"
+
+    async def peer() -> None:
+        await backoff_started.wait()
+        peer_ran.set()
+        release_backoff.set()
+
+    monkeypatch.setattr(errors.asyncio, "sleep", wait_for_release)
+    monkeypatch.setattr(errors.random, "uniform", lambda _start, _end: 0.0)
+
+    result, _ = await asyncio.gather(
+        errors.run_with_retry(read, idempotent=True, max_attempts=2),
+        peer(),
+    )
+
+    assert result == "ok"
+    assert peer_ran.is_set()
 
 
 def test_normalized_guidance_never_echoes_api_key() -> None:

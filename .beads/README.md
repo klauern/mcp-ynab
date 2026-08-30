@@ -17,6 +17,25 @@ bd export -o .beads/issues.jsonl
 
 Do not use the retired `bd sync` or `bd merge` commands.
 
+## Backup and Recovery
+
+Use a Dolt-native backup for off-machine disaster recovery. A JSONL export can
+rehydrate issue records, but it cannot restore the complete Dolt database.
+
+```bash
+bd backup init <path>    # Configure a filesystem or DoltHub destination once
+bd backup sync           # Push the complete database and history
+bd backup status         # Inspect the latest backup result
+bd backup restore [path] # Restore from the configured or specified backup
+```
+
+`bd backup restore --force` overwrites an existing database. Resolve the exact
+backup path and review `bd backup restore --help` before using it.
+
+`bd export -o .beads/issues.jsonl` creates an issue export for migration and
+interoperability. It does not preserve Dolt history, branches, working-set
+state, or non-issue tables.
+
 ## Common Commands
 
 ```bash

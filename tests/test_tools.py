@@ -733,6 +733,20 @@ async def test_get_categories_renders_grouped_markdown(mock_ynab_apis: SimpleNam
 
 
 @pytest.mark.asyncio
+async def test_get_categories_preserves_large_milliunit_precision(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    amount = 9_007_199_254_741_005
+    groups = [_category_group_mock("Large", [_category_mock("c-1", "Exact", amount, -amount)])]
+    mock_ynab_apis.categories.get_categories.return_value = _resp(category_groups=groups)
+
+    result = await server.get_categories("b-1")
+
+    assert "$9,007,199,254,741.01" in result
+    assert "-$9,007,199,254,741.01" in result
+
+
+@pytest.mark.asyncio
 async def test_get_categories_handles_no_groups(mock_ynab_apis: SimpleNamespace) -> None:
     mock_ynab_apis.categories.get_categories.return_value = _resp(category_groups=[])
 
@@ -3684,3 +3698,24 @@ async def test_list_enriched_categories_resource_shows_balance_columns(
     assert "$200.00" in text
     assert "$80.00" in text
     assert "$120.00" in text
+
+
+@pytest.mark.asyncio
+async def test_list_enriched_categories_resource_preserves_large_milliunit_precision(
+    mock_ynab_apis: SimpleNamespace,
+) -> None:
+    amount = 9_007_199_254_741_005
+    mock_ynab_apis.categories.get_categories.return_value = _resp(
+        category_groups=[
+            _category_group_enriched_mock(
+                "Large",
+                [_category_enriched_mock("c-1", "Exact", amount, -amount, amount)],
+            )
+        ]
+    )
+
+    result = await server.list_enriched_categories_resource("b-1")
+
+    text = result[0].text
+    assert "$9,007,199,254,741.01" in text
+    assert "-$9,007,199,254,741.01" in text

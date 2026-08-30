@@ -35,6 +35,18 @@ def test_format_accounts_output_groups_and_summary() -> None:
     assert formatted["summary"]["net_worth"] == "$150.00"
 
 
+def test_format_accounts_output_preserves_large_milliunit_precision() -> None:
+    balance = 9_007_199_254_740_044
+
+    formatted = server._format_accounts_output([_account("Large", "checking", balance)])
+
+    expected = "$9,007,199,254,740.04"
+    assert formatted["accounts"][0]["accounts"][0]["balance"] == expected
+    assert formatted["accounts"][0]["total"] == expected
+    assert formatted["summary"]["total_assets"] == expected
+    assert formatted["summary"]["net_worth"] == expected
+
+
 ALL_OFFICIAL_ACCOUNT_TYPES = [
     "checking",
     "savings",
